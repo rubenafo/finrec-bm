@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "txt-csv-matching output",
+  "description": "\"source\" IDs identify records in the input; \"ledger\" IDs identify ledger entries in the database.",
+  "type": "object",
+  "required": ["matches", "unmatched"],
+  "additionalProperties": false,
+  "properties": {
+    "matches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "ledger"],
+        "additionalProperties": false,
+        "properties": {
+          "source": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "ledger": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "unmatched": {
+      "description": "IDs of input records that could not be reconciled.",
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# Run outputs
+/results/
+
+# Dependencies and build output
+node_modules/
+/dist/
+
+
+# API keys (template: .env.example)
+.env
