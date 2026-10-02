@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -50,8 +50,9 @@ describe("runTest", () => {
 
     const perfect = { id_precision: 1, id_recall: 1, file_accuracy: 1, claim_recall: 1, exact_match: 1, reasoning_score: 1 };
     assert.equal(run.test, "txt-matching");
-    assert.equal(run.results.length, 1);
-    assert.deepEqual(run.results[0]!.metrics, perfect);
+    // Every case is run; the scripted answer is case-0001's.
+    assert.equal(run.results.length, readdirSync(join(benchmarkDir, "txt-matching", "data")).length);
+    assert.deepEqual(run.results.find((r) => r.caseId === "case-0001")!.metrics, perfect);
 
     const result = JSON.parse(readFileSync(join(outDir, "case-0001.json"), "utf8")) as CaseResult;
     assert.deepEqual(result.metrics, perfect);

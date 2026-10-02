@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "txt-matching output",
-  "description": "One finding per transaction that is evidence for a reported value; empty if there is none.",
+  "description": "One finding per record that is evidence for a reported value: each transaction, and each FX rate used to convert one; empty if there is none.",
   "type": "array",
   "items": {
     "type": "object",
@@ -11,19 +11,19 @@
       "transaction_id": {
         "type": "string",
         "minLength": 1,
-        "description": "ID of the transaction."
+        "description": "ID of the transaction, or of the FX rate."
       },
       "file": {
         "type": "string",
         "minLength": 1,
-        "description": "Name of the evidence file the transaction comes from."
+        "description": "Name of the evidence file the record comes from."
       },
       "reasoning": {
         "type": "string",
         "minLength": 1,
         "maxLength": 300,
         "pattern": "^[^\\r\\n]*$",
-        "description": "One line explaining which reported value the transaction supports and how."
+        "description": "One line explaining which reported value the record supports and how."
       }
     }
   }
