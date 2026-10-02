@@ -1,28 +1,34 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "txt-csv-matching output",
-  "description": "\"source\" IDs identify records in the input; \"ledger\" IDs identify ledger entries in the database.",
-  "type": "object",
-  "required": ["matches", "unmatched"],
-  "additionalProperties": false,
-  "properties": {
-    "matches": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["source", "ledger"],
-        "additionalProperties": false,
-        "properties": {
-          "source": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-          "ledger": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-          "note": { "type": "string" }
-        }
+  "description": "One finding per record that is evidence for a reported value: every transaction, master-data row, rate or minutes item the value rests on; empty if there is none.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["source_type", "source", "record_id", "reasoning"],
+    "additionalProperties": false,
+    "properties": {
+      "source_type": {
+        "enum": ["file", "table"],
+        "description": "\"file\" for a file in the evidence folder, \"table\" for a database table."
+      },
+      "source": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Name of the evidence file (e.g. payments.csv), or of the database table."
+      },
+      "record_id": {
+        "type": "string",
+        "minLength": 1,
+        "description": "ID of the record: a CSV row's ID (first column), a minutes item's ID, or a table row's primary key."
+      },
+      "reasoning": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300,
+        "pattern": "^[^\\r\\n]*$",
+        "description": "One line explaining which reported value the record supports and how."
       }
-    },
-    "unmatched": {
-      "description": "IDs of input records that could not be reconciled.",
-      "type": "array",
-      "items": { "type": "string" }
     }
   }
 }

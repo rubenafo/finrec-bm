@@ -1,0 +1,6 @@
+Board pack preparation - minutes
+Date: 8 October 2026. Attendees: J. Alvarez (Finance), L. Moreau (Marketing).
+
+[MIN-2610-51] Board pack amounts are in USD thousands. Spend in other currencies is converted at the monthly average (AVG) rate of the spend month.
+[MIN-2610-52] Totals are computed from exact converted amounts and rounded once, at the total; line items are not rounded first.
+[MIN-2610-53] Marketing spend covers campaigns owned by the Marketing department only.

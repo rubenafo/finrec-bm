@@ -1,0 +1,14 @@
+line_id,bank_account_id,booking_date,description,amount
+BS-90011,BA-01,2026-06-29,Customer receipt Coho Vineyard,125000.00
+BS-90012,BA-01,2026-07-03,Customer receipt Fourth Coffee,318400.25
+BS-90013,BA-02,2026-07-06,Payroll July,-985000.00
+BS-90014,BA-01,2026-07-21,Supplier payment Proseware Group,-146270.00
+BS-90015,BA-03,2026-08-02,Customer receipt Woodgrove Bank,88700.00
+BS-90016,BA-01,2026-08-11,Customer receipt Margie's Travel,220155.75
+BS-90017,BA-01,2026-08-31,Bank charges August,-185.40
+BS-90018,BA-01,2026-09-09,Intercompany transfer to BA-02,-400000.00
+BS-90019,BA-02,2026-09-09,Intercompany transfer from BA-01,447280.00
+BS-90020,BA-01,2026-09-24,Customer receipt Blue Yonder Airlines,173300.00
+BS-90021,BA-01,2026-09-30,Supplier payment Lucerne Publishing,-69482.50
+BS-90022,BA-01,2026-10-01,Customer receipt Coho Vineyard,91000.00
+BS-90023,BA-04,2026-09-15,Customer receipt Adventure Works,54000.00

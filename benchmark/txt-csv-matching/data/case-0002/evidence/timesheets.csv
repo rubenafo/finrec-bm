@@ -1,0 +1,10 @@
+timesheet_id,vendor_id,consultant,week_ending,days,status
+TS-6101,V-1002,A. Ruiz,2026-08-28,4.5,approved
+TS-6102,V-1002,B. Novak,2026-08-28,4.0,approved
+TS-6103,V-1002,A. Ruiz,2026-09-04,4.0,approved
+TS-6104,V-1002,B. Novak,2026-09-11,5.0,approved
+TS-6105,V-1004,C. Haas,2026-09-11,3.0,approved
+TS-6106,V-1002,A. Ruiz,2026-09-18,3.5,approved
+TS-6107,V-1002,B. Novak,2026-09-25,4.5,approved
+TS-6108,V-1002,A. Ruiz,2026-09-25,2.0,pending
+TS-6109,V-1002,A. Ruiz,2026-10-02,3.0,approved

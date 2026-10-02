@@ -1,0 +1,6 @@
+Cost allocation working group - minutes
+Date: 6 October 2026. Attendees: R. Okafor (IT), M. Chen (HR), J. Alvarez (Finance).
+
+[MIN-2610-41] Q3 IT shared-service costs (pool CC-900) are allocated by FTE at the quarter-end headcount snapshot.
+[MIN-2610-42] Only cost centres flagged to receive the IT allocation in the cost centre master take part; the others are charged directly.
+[MIN-2610-43] Allocated amounts are rounded to cents per cost centre.

@@ -1,0 +1,6 @@
+Q3 2026 close meeting - minutes
+Date: 2 October 2026. Attendees: J. Alvarez (Finance), S. Lindqvist (Procurement), K. Mensah (Logistics).
+
+[MIN-2610-01] Q3 close timetable confirmed: sub-ledgers lock on 9 October, group reporting on 16 October.
+[MIN-2610-02] Freight cost is recognised in the month the goods were delivered (proof-of-delivery date), not the invoice date or the payment date.
+[MIN-2610-03] Contoso Logistics rate card for 2027 to be renegotiated; the current card stays in force until 31 December.
