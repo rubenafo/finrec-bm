@@ -52,7 +52,7 @@ export class ScriptedModel extends Model<BaseModelConfig> {
     yield new ModelMessageStopEvent({ type: "modelMessageStopEvent", stopReason: "tool" in step ? "toolUse" : "endTurn" });
     yield new ModelMetadataEvent({
       type: "modelMetadataEvent",
-      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, cacheReadInputTokens: 6 },
     });
   }
 }

@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "benchmark": "tsx src/benchmark.ts",
+    "dashboard": "tsx src/dashboard.ts",
     "show-models": "tsx src/show-models.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"

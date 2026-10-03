@@ -58,7 +58,7 @@ describe("runAgent", () => {
         ["read_text_file", false],
       ],
     );
-    assert.deepEqual(run.usage, { inputTokens: 40, outputTokens: 20 });
+    assert.deepEqual(run.usage, { inputTokens: 40, outputTokens: 20, cachedInputTokens: 24 });
   });
 
   it("stops at maxTurns", async () => {

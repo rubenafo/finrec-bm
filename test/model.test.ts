@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { loadEnv } from "../src/common/env.js";
-import { DEFAULT_MODEL, createModel, modelProviders, parseModelSpec, providers } from "../src/common/model.js";
+import { DEFAULT_MODEL, createModel, formatModelSpec, knownModelSpecs, modelProviders, parseModelSpec, providers, resolveModelList, resolveModels } from "../src/common/model.js";
+import { matchNames } from "../src/common/pattern.js";
 
 const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "AWS_REGION"];
 let saved: NodeJS.ProcessEnv;
@@ -26,15 +27,75 @@ describe("model specs", () => {
   it("parses provider and model ID, keeping colons in the ID", () => {
     assert.deepEqual(parseModelSpec(DEFAULT_MODEL), { provider: "anthropic", modelId: "claude-opus-5" });
     assert.deepEqual(parseModelSpec("bedrock:vendor.model-v1:0"), { provider: "bedrock", modelId: "vendor.model-v1:0" });
-    assert.deepEqual(parseModelSpec("deepseek:deepseek-v4-pro"), { provider: "deepseek", modelId: "deepseek-v4-pro" });
+    assert.deepEqual(parseModelSpec("ds-v4p-reasoning-max"), { provider: "deepseek", modelId: "ds-v4p-reasoning-max" });
+    assert.deepEqual(parseModelSpec("deepseek:ds-v4p-reasoning-max"), { provider: "deepseek", modelId: "ds-v4p-reasoning-max" });
+  });
+
+  it("formats DeepSeek models without the provider prefix", () => {
+    assert.equal(formatModelSpec({ provider: "deepseek", modelId: "ds-flash-reasoning-off" }), "ds-flash-reasoning-off");
+    assert.equal(formatModelSpec({ provider: "anthropic", modelId: "claude-opus-5" }), "anthropic:claude-opus-5");
   });
 
   it("rejects unknown providers, missing IDs and unsupported models", () => {
     for (const spec of ["claude-opus-5", "acme:model", "openai:", ":gpt"]) {
       assert.throws(() => parseModelSpec(spec), /expected <provider>:<model id>/, spec);
     }
-    assert.throws(() => parseModelSpec("deepseek:deepseek-chat"), /DeepSeek supports deepseek-flash, deepseek-v4-pro/);
+    assert.throws(() => parseModelSpec("deepseek:deepseek-flash"), /DeepSeek supports ds-flash-reasoning-off, ds-flash-reasoning-low/);
     assert.throws(() => parseModelSpec("anthropic:claude-2"), /Anthropic supports claude-fable-5-1/);
+  });
+});
+
+describe("model selection", () => {
+  const ids = (pattern: string) => resolveModels(pattern).map(formatModelSpec);
+
+  it("selects one model for a valid spec, including providers without a model list", () => {
+    assert.deepEqual(ids("ds-flash-reasoning-high"), ["ds-flash-reasoning-high"]);
+    assert.deepEqual(ids("openai:gpt-5"), ["openai:gpt-5"]);
+  });
+
+  it("matches anything else as a regex over the listed models", () => {
+    assert.deepEqual(ids("ds-flash"), ["ds-flash-reasoning-off", "ds-flash-reasoning-low", "ds-flash-reasoning-high", "ds-flash-reasoning-max"]);
+    assert.deepEqual(ids("ds-v4p"), ["ds-v4p-reasoning-off", "ds-v4p-reasoning-low", "ds-v4p-reasoning-high", "ds-v4p-reasoning-max"]);
+    assert.deepEqual(ids("ds-.*-(high|max)$"), ["ds-flash-reasoning-high", "ds-flash-reasoning-max", "ds-v4p-reasoning-high", "ds-v4p-reasoning-max"]);
+    assert.deepEqual(ids("anthropic:claude-opus-5"), ["anthropic:claude-opus-5"]);
+    assert.deepEqual(ids("opus-5"), ["anthropic:claude-opus-5-5", "anthropic:claude-opus-5"]);
+  });
+
+  it("selects a family's models: ds-flash, ds-v4pro and its short form ds-v4p", () => {
+    const v4pro = ["ds-v4p-reasoning-off", "ds-v4p-reasoning-low", "ds-v4p-reasoning-high", "ds-v4p-reasoning-max"];
+    assert.deepEqual(ids("ds-v4pro"), v4pro);
+    assert.deepEqual(ids("DS-V4PRO"), v4pro);
+    assert.deepEqual(ids("ds-v4p"), v4pro);
+  });
+
+  it("takes a comma-separated list of families, names and patterns, each model once", () => {
+    const list = (value: string) => resolveModelList(value).map(formatModelSpec);
+    assert.deepEqual(list("ds-flash, ds-v4pro").length, 8);
+    assert.deepEqual(list("ds-flash-reasoning-low,anthropic:claude-opus-5"), ["ds-flash-reasoning-low", "anthropic:claude-opus-5"]);
+    assert.deepEqual(list("ds-flash-reasoning-max,ds-flash,"), ["ds-flash-reasoning-max", "ds-flash-reasoning-off", "ds-flash-reasoning-low", "ds-flash-reasoning-high"]);
+    assert.throws(() => resolveModelList(" , "), /no model given/);
+    assert.throws(() => resolveModelList("ds-flash,gpt"), /matches none of/);
+  });
+
+  it("fails when the pattern matches no listed model", () => {
+    assert.throws(() => resolveModels("gpt"), /matches none of: anthropic:claude-fable-5-1/);
+    assert.throws(() => resolveModels("ds-(flash"), /invalid pattern/);
+  });
+
+  it("lists every model with a model list", () => {
+    assert.ok(knownModelSpecs().includes("anthropic:claude-opus-5"));
+    assert.ok(knownModelSpecs().includes("ds-v4p-reasoning-low"));
+  });
+});
+
+describe("matchNames", () => {
+  const tests = ["txt-csv-matching", "txt-matching"];
+
+  it("prefers an exact name, else matches a case-insensitive regex", () => {
+    assert.deepEqual(matchNames("txt-matching", tests), ["txt-matching"]);
+    assert.deepEqual(matchNames("TXT", tests), tests);
+    assert.deepEqual(matchNames("csv", tests), ["txt-csv-matching"]);
+    assert.deepEqual(matchNames("pdf", tests), []);
   });
 });
 
@@ -42,7 +103,16 @@ describe("ModelProvider", () => {
   it("describes DeepSeek's models and API key", () => {
     const deepseek = modelProviders.deepseek!;
     assert.equal(deepseek.label, "DeepSeek");
-    assert.deepEqual(deepseek.models, ["deepseek-flash", "deepseek-v4-pro"]);
+    assert.deepEqual(deepseek.models, [
+      "ds-flash-reasoning-off",
+      "ds-flash-reasoning-low",
+      "ds-flash-reasoning-high",
+      "ds-flash-reasoning-max",
+      "ds-v4p-reasoning-off",
+      "ds-v4p-reasoning-low",
+      "ds-v4p-reasoning-high",
+      "ds-v4p-reasoning-max",
+    ]);
     assert.equal(deepseek.apiKeyEnv, "DEEPSEEK_API_KEY");
   });
 
@@ -66,16 +136,36 @@ describe("ModelProvider", () => {
       "bedrock:any-model",
       "openai:any-model",
       "google:any-model",
-      "deepseek:deepseek-flash",
-      "deepseek:deepseek-v4-pro",
     ]) {
       const model = await createModel(spec);
       assert.equal(model.getConfig().modelId, parseModelSpec(spec).modelId, spec);
     }
   });
 
+  it("maps DeepSeek names to the API model and reasoning setting", async () => {
+    process.env.DEEPSEEK_API_KEY = "test";
+    const cases: [string, string, unknown][] = [
+      ["ds-flash-reasoning-off", "deepseek-flash", { thinking: { type: "disabled" } }],
+      ["ds-flash-reasoning-low", "deepseek-flash", { thinking: { type: "enabled" }, reasoning_effort: "low" }],
+      ["ds-flash-reasoning-high", "deepseek-flash", { thinking: { type: "enabled" }, reasoning_effort: "high" }],
+      ["ds-flash-reasoning-max", "deepseek-flash", { thinking: { type: "enabled" }, reasoning_effort: "max" }],
+      ["ds-v4p-reasoning-off", "deepseek-v4-pro", { thinking: { type: "disabled" } }],
+      ["ds-v4p-reasoning-low", "deepseek-v4-pro", { thinking: { type: "enabled" }, reasoning_effort: "low" }],
+      ["ds-v4p-reasoning-high", "deepseek-v4-pro", { thinking: { type: "enabled" }, reasoning_effort: "high" }],
+      ["ds-v4p-reasoning-max", "deepseek-v4-pro", { thinking: { type: "enabled" }, reasoning_effort: "max" }],
+    ];
+    for (const [name, apiModel, params] of cases) {
+      const config = (await createModel(name)).getConfig() as { modelId: string; params?: unknown };
+      assert.equal(config.modelId, apiModel, name);
+      assert.deepEqual(config.params, params, name);
+    }
+    // Callers such as the judge can still force thinking off.
+    const forced = (await createModel("ds-v4p-reasoning-max", { thinking: false })).getConfig() as { params?: unknown };
+    assert.deepEqual(forced.params, { thinking: { type: "disabled" } });
+  });
+
   it("fails clearly when a required API key is missing", async () => {
-    await assert.rejects(createModel("deepseek:deepseek-flash"), /DeepSeek needs an API key: set DEEPSEEK_API_KEY in \.env/);
+    await assert.rejects(createModel("ds-flash-reasoning-high"), /DeepSeek needs an API key: set DEEPSEEK_API_KEY in \.env/);
     await assert.rejects(createModel("openai:any-model"), /set OPENAI_API_KEY in \.env/);
     await assert.rejects(createModel("anthropic:claude-opus-5"), /set ANTHROPIC_API_KEY in \.env/);
   });
@@ -91,7 +181,7 @@ describe("ModelProvider", () => {
       loadEnv(join(dir, ".env"));
       assert.equal(modelProviders.deepseek!.apiKey(), "from-file");
       assert.equal(modelProviders.openai!.apiKey(), undefined);
-      await createModel("deepseek:deepseek-v4-pro");
+      await createModel("ds-v4p-reasoning-high");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

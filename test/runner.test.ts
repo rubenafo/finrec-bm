@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { Judge } from "../src/common/judge.js";
-import { activityOf, parseAnswer, runFolderName, runTest, type CaseResult } from "../src/runner.js";
+import { activityOf, parseAnswer, runTest, type CaseResult } from "../src/runner.js";
 import { openTestDb } from "../src/test-db.js";
 import { ScriptedModel } from "./helpers/scripted-model.js";
 
@@ -68,7 +68,8 @@ describe("runTest", () => {
     assert.deepEqual(result.activity, { filesChecked: 1, dbQueries: 1, dbQueriesSucceeded: 1, dbQueriesFailed: 0 });
     assert.equal(result.difficulty, "easy", "difficulty and tags come from meta.json");
     assert.ok(result.tags.includes("multi-transaction-sum"));
-    assert.ok(!existsSync(join(outDir, "summary.json")), "summary.json is written once per run, not per test");
+    assert.ok(!existsSync(join(outDir, "summary.json")), "summary.json is rebuilt by the caller, not per test");
+    assert.match(result.finishedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+0[12]:00$/);
 
     // The agent's first message is the rendered user prompt, without the canary.
     const firstMessage = JSON.stringify(model.received[0]);
@@ -193,18 +194,25 @@ describe("runTest", () => {
   });
 });
 
-describe("runFolderName", () => {
-  it("uses Central European Time: CEST in summer, CET in winter", () => {
-    assert.equal(runFolderName(new Date("2026-10-02T05:45:01Z")), "2026-10-02_07-45-01_CEST");
-    assert.equal(runFolderName(new Date("2026-01-15T05:45:01Z")), "2026-01-15_06-45-01_CET");
-  });
-
-  it("tells apart the hour repeated when clocks go back", () => {
-    // 25 October 2026: 02:30 happens twice in Central Europe.
-    const first = runFolderName(new Date("2026-10-25T00:30:00Z"));
-    const second = runFolderName(new Date("2026-10-25T01:30:00Z"));
-    assert.equal(first, "2026-10-25_02-30-00_CEST");
-    assert.equal(second, "2026-10-25_02-30-00_CET");
+describe("runTest with cases", () => {
+  it("runs only the given cases, replacing their result files and leaving the others", async () => {
+    const outDir = join(outRoot, "only");
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(join(outDir, "case-0001.json"), "old");
+    writeFileSync(join(outDir, "case-0002.json"), "kept");
+    const run = await runTest({
+      testDir: join(benchmarkDir, "txt-matching"),
+      model: new ScriptedModel([{ text: "{}" }]),
+      modelSpec: "scripted:model",
+      judge,
+      judgeSpec: "stub:judge",
+      outDir,
+      cases: ["case-0001"],
+      log: quiet,
+    });
+    assert.deepEqual(run.results.map((r) => r.caseId), ["case-0001"]);
+    assert.equal((JSON.parse(readFileSync(join(outDir, "case-0001.json"), "utf8")) as CaseResult).caseId, "case-0001");
+    assert.equal(readFileSync(join(outDir, "case-0002.json"), "utf8"), "kept");
   });
 });
 

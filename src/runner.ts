@@ -7,7 +7,7 @@ import { runAgent, type AgentRun } from "./common/agent.js";
 import type { Judge, Verdict } from "./common/judge.js";
 import { buildUserPrompt } from "./prompt.js";
 import type { Metrics, Scorer } from "./scorer.js";
-import type { TestRun } from "./summary.js";
+import { isoInCet, type TestRun } from "./summary.js";
 import { openTestDb } from "./test-db.js";
 import { tools } from "./tools/index.js";
 
@@ -18,8 +18,10 @@ export interface RunTestOptions {
   modelSpec: string;
   judge: Judge;
   judgeSpec: string;
-  /** Folder for this test's results; created if missing. */
+  /** Folder for this test's results; created if missing. Case files are overwritten. */
   outDir: string;
+  /** Only run these cases; default all. */
+  cases?: string[];
   maxTurns?: number;
   /** Progress lines; defaults to stderr. */
   log?: (line: string) => void;
@@ -49,6 +51,8 @@ export interface CaseResult {
   /** Set when the run failed, e.g. on an API error; the case then scores 0. */
   error?: string;
   seconds: number;
+  /** When the case finished, ISO 8601 in CET. */
+  finishedAt: string;
 }
 
 export interface Activity {
@@ -110,30 +114,8 @@ export function parseAnswer(text: string): unknown {
   return null;
 }
 
-const CET = new Intl.DateTimeFormat("en-GB", {
-  timeZone: "CET",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hourCycle: "h23",
-  timeZoneName: "short",
-});
-
-/**
- * Names a run's results folder after its start time in Central European Time,
- * e.g. `2026-10-02_07-45-01_CEST`: CET in winter, CEST in summer. The zone
- * label keeps names unique in the hour repeated when clocks go back. No ":",
- * which Windows paths don't allow.
- */
-export function runFolderName(date: Date): string {
-  const p = Object.fromEntries(CET.formatToParts(date).map((part) => [part.type, part.value]));
-  return `${p.year}-${p.month}-${p.day}_${p.hour}-${p.minute}-${p.second}_${p.timeZoneName}`;
-}
-
-function caseIds(testDir: string): string[] {
+/** The case IDs in a test's data/ folder, sorted. */
+export function caseIds(testDir: string): string[] {
   const dataDir = join(testDir, "data");
   if (!existsSync(dataDir)) return [];
   return readdirSync(dataDir, { withFileTypes: true })
@@ -159,12 +141,13 @@ const format = (value: number) => (Number.isInteger(value) ? String(value) : val
 const elapsed = (since: number) => `${((Date.now() - since) / 1000).toFixed(2)} secs`;
 
 /**
- * Runs every case of one test: runs the agent on each case, scores the answer
- * and writes one JSON file per case to `outDir`. Each case starts fresh, with
+ * Runs every case of one test, or the given `cases`: runs the agent on each
+ * case, scores the answer and writes one JSON file per case to `outDir`,
+ * replacing that case's previous result. Each case starts fresh, with
  * nothing carried over from earlier cases: a new agent with an empty
  * conversation, and a new database built from db.sql that is destroyed when
- * the case ends. The run's summary.json is built from the returned results
- * (see buildRunSummary).
+ * the case ends. results/summary.json is rebuilt from the case files
+ * afterwards (see writeResultsSummary).
  *
  * Logs one line when the test starts and one when it ends, with its duration,
  * and the same for each case; a case's end line also has its scores.
@@ -173,7 +156,7 @@ export async function runTest(options: RunTestOptions): Promise<TestRun> {
   const { testDir, outDir } = options;
   const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const test = basename(testDir);
-  const ids = caseIds(testDir);
+  const ids = caseIds(testDir).filter((id) => options.cases === undefined || options.cases.includes(id));
   if (ids.length === 0) {
     log(`${test}: no cases, skipped`);
     return { test, results: [] };
@@ -240,9 +223,10 @@ export async function runTest(options: RunTestOptions): Promise<TestRun> {
         turnLimitReached: run?.turnLimitReached ?? false,
         activity: activityOf(run?.toolCalls ?? []),
         toolCalls: run?.toolCalls ?? [],
-        usage: run?.usage ?? { inputTokens: 0, outputTokens: 0 },
+        usage: run?.usage ?? { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
         ...(error !== undefined && { error }),
         seconds: Math.round((Date.now() - started) / 100) / 10,
+        finishedAt: isoInCet(new Date()),
       };
       results.push(result);
       writeFileSync(join(outDir, `${caseId}.json`), `${JSON.stringify(result, null, 2)}\n`);

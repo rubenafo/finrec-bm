@@ -26,7 +26,7 @@ describe("createJudge", () => {
     assert.deepEqual(await judge(request), {
       score: 1,
       rationale: "Same records and sum.",
-      usage: { inputTokens: 10, outputTokens: 5 },
+      usage: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 6 },
     });
     const sent = JSON.stringify(model.received[0]);
     for (const part of Object.values(request)) assert.ok(sent.includes(part), part);
@@ -37,7 +37,7 @@ describe("createJudge", () => {
     assert.deepEqual(await (await createJudge(model))(request), {
       score: 0,
       rationale: "Wrong sum.",
-      usage: { inputTokens: 20, outputTokens: 10 },
+      usage: { inputTokens: 20, outputTokens: 10, cachedInputTokens: 12 },
     });
     assert.equal(model.calls, 2);
   });
@@ -52,7 +52,7 @@ describe("createJudge", () => {
     const model = new ScriptedModel([{ text: '{"score": 1, "rationale": "ok"}' }]);
     const judge = await createJudge(model);
     await judge(request);
-    assert.deepEqual(await judge({ ...request }), { score: 1, rationale: "ok", usage: { inputTokens: 0, outputTokens: 0 } });
+    assert.deepEqual(await judge({ ...request }), { score: 1, rationale: "ok", usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 } });
     assert.equal(model.calls, 1);
     await judge({ ...request, candidate: "different" });
     assert.equal(model.calls, 2);
@@ -79,8 +79,8 @@ describe("judge model", () => {
   });
 
   it("defaults to DeepSeek flash, overridable with FINREC_JUDGE_MODEL", () => {
-    assert.equal(DEFAULT_JUDGE_MODEL, "deepseek:deepseek-flash");
-    assert.deepEqual(judgeModelSpec(), { provider: "deepseek", modelId: "deepseek-flash" });
+    assert.equal(DEFAULT_JUDGE_MODEL, "ds-flash-reasoning-off");
+    assert.deepEqual(judgeModelSpec(), { provider: "deepseek", modelId: "ds-flash-reasoning-off" });
     assert.deepEqual(judgeModelSpec({ FINREC_JUDGE_MODEL: "anthropic:claude-opus-5" }), { provider: "anthropic", modelId: "claude-opus-5" });
   });
 
