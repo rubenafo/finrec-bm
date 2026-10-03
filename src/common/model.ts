@@ -91,12 +91,11 @@ const deepseek = new ModelProvider({
   requiresApiKey: true,
   defaultMaxTokens: 8_192,
   // DeepSeek serves an OpenAI-compatible Chat Completions API.
-  async create(modelId, { apiKey, maxTokens, thinking }) {
+  async create(modelId, { apiKey, maxTokens }) {
     const { OpenAIModel } = await import("@strands-agents/sdk/models/openai");
     const { apiModel, reasoning } = deepseekModels[modelId]!;
-    // The caller can still force thinking off (the judge does).
     const params =
-      !thinking || reasoning === "off"
+      reasoning === "off"
         ? { thinking: { type: "disabled" } }
         : { thinking: { type: "enabled" }, reasoning_effort: reasoning };
     return new OpenAIModel({

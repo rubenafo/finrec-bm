@@ -2,12 +2,6 @@ import type { BaseModelConfig, Model } from "@strands-agents/sdk";
 
 export interface BuildOptions {
   maxTokens?: number;
-  /**
-   * Set false to turn off the model's thinking where the provider supports it
-   * (DeepSeek); other providers ignore it. Useful for short, cheap calls such
-   * as the judge's.
-   */
-  thinking?: boolean;
 }
 
 export interface ModelProviderConfig {
@@ -32,7 +26,7 @@ export interface ModelProviderConfig {
   /** Creates the Strands model; `apiKey` is undefined when not set. */
   create(
     modelId: string,
-    settings: { apiKey: string | undefined; maxTokens: number; thinking: boolean },
+    settings: { apiKey: string | undefined; maxTokens: number },
   ): Promise<Model<BaseModelConfig>>;
 }
 
@@ -85,6 +79,6 @@ export class ModelProvider {
       throw new Error(`${this.label} needs an API key: set ${this.config.apiKeyEnv} in .env`);
     }
     const maxTokens = options.maxTokens ?? this.config.defaultMaxTokens ?? 16_000;
-    return this.config.create(modelId, { apiKey, maxTokens, thinking: options.thinking ?? true });
+    return this.config.create(modelId, { apiKey, maxTokens });
   }
 }

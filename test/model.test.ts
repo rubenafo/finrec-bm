@@ -159,9 +159,6 @@ describe("ModelProvider", () => {
       assert.equal(config.modelId, apiModel, name);
       assert.deepEqual(config.params, params, name);
     }
-    // Callers such as the judge can still force thinking off.
-    const forced = (await createModel("ds-v4p-reasoning-max", { thinking: false })).getConfig() as { params?: unknown };
-    assert.deepEqual(forced.params, { thinking: { type: "disabled" } });
   });
 
   it("fails clearly when a required API key is missing", async () => {

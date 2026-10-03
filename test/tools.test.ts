@@ -6,6 +6,7 @@ import { after, before, describe, it } from "node:test";
 import { caseContext } from "../src/case-context.js";
 import { openTestDb, type TestDb } from "../src/test-db.js";
 import { listEvidence, ToolError, tools, type CaseContext } from "../src/tools/index.js";
+import { buildMsg } from "../scripts/msg-writer.js";
 
 // A throwaway test folder: db.sql loads a CSV by relative path, one case with evidence.
 const testDir = mkdtempSync(join(tmpdir(), "finrec-test-"));
@@ -27,6 +28,17 @@ before(async () => {
   );
   writeFileSync(join(evidenceDir, "bank_statement.csv"), "id,amount\nB-001,100.00\n");
   writeFileSync(join(evidenceDir, "emails", "not-really.msg"), "plain text");
+  writeFileSync(
+    join(evidenceDir, "emails", "remittance.msg"),
+    buildMsg({
+      from: { name: "Ana Pérez", email: "ana@payer.example" },
+      to: [{ name: "AR", email: "ar@payee.example" }],
+      cc: [{ name: "Treasury", email: "treasury@payee.example" }],
+      sent: "2026-03-02T10:15:00+01:00",
+      subject: "Remittance advice – March",
+      body: ["Paid INV-1001 and INV-1002.", "Total EUR 1.234,50"],
+    }),
+  );
   writeFileSync(join(caseDir, "expected.json"), "{}");
 
   db = await openTestDb(testDir);
@@ -119,6 +131,23 @@ describe("read_msg_file", () => {
     await assert.rejects(run("read_msg_file", { path: "bank_statement.csv" }), ToolError);
   });
 
+  it("reads sender, recipients, sent time, subject and body", async () => {
+    const email = JSON.parse(await run("read_msg_file", { path: "evidence/emails/remittance.msg" }));
+    assert.deepEqual(email.from, { name: "Ana Pérez", email: "ana@payer.example" });
+    assert.deepEqual(email.recipients, [
+      { type: "to", name: "AR", email: "ar@payee.example" },
+      { type: "cc", name: "Treasury", email: "treasury@payee.example" },
+    ]);
+    assert.equal(new Date(email.sent).toISOString(), "2026-03-02T09:15:00.000Z");
+    assert.equal(email.subject, "Remittance advice – March");
+    assert.equal(email.body, ["Paid INV-1001 and INV-1002.", "Total EUR 1.234,50"].join("\r\n"));
+    assert.deepEqual(email.attachments, []);
+  });
+
+  it("is the tool read_text_file points to for .msg files", async () => {
+    await assert.rejects(run("read_text_file", { path: "emails/remittance.msg" }), /read it with read_msg_file/);
+  });
+
   it("reports unparseable .msg files as tool errors", async () => {
     await assert.rejects(run("read_msg_file", { path: "emails/not-really.msg" }), ToolError);
   });
@@ -126,6 +155,6 @@ describe("read_msg_file", () => {
 
 describe("listEvidence", () => {
   it("lists nested files with forward slashes", () => {
-    assert.deepEqual(listEvidence(evidenceDir), ["bank_statement.csv", "emails/not-really.msg"]);
+    assert.deepEqual(listEvidence(evidenceDir), ["bank_statement.csv", "emails/not-really.msg", "emails/remittance.msg"]);
   });
 });

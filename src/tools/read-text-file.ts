@@ -24,7 +24,7 @@ export const readTextFile: Tool = {
     }
     const content = readFileSync(file);
     if (content.includes(0)) {
-      throw new ToolError("file is not plain text");
+      throw new ToolError(file.toLowerCase().endsWith(".msg") ? "file is an Outlook email: read it with read_msg_file" : "file is not plain text");
     }
     return content.toString("utf8");
   },
