@@ -20,8 +20,13 @@
     --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
     --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
     --other: #898781;
+    /* Each model has its own slot, assigned in this order to models grouped by family,
+       most capable first; the order passes the adjacent-pair colour-blindness checks. */
     --seq-lo: #86b6ef; --seq-hi: #184f95; --heat-0: #e6f0fc; --on-hi: #ffffff;
     --critical: #d03b3b; --warning: #fab219;
+    /* Case outcomes: a neutral grey ramp (validated --ordinal), dark = exact, so no outcome
+       colour can be mistaken for a model's hue; errors in status critical. Each has an icon and a label. */
+    --out-exact: #3d3c39; --out-partial: #7d7c76; --out-none: #b2b1a9;
     --empty: #f0efec;
   }
   * { box-sizing: border-box; }
@@ -48,6 +53,12 @@
   button:hover { background: var(--hover); }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 12px; color: var(--ink-2); }
   .legend .item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .fam { gap: 10px; padding-right: 8px; border-right: 1px solid var(--grid); }
+  .legend .fam:last-child { border-right: 0; }
+  .legend .fam b { font-weight: 600; color: var(--ink); }
+  .lvl { display: inline-block; vertical-align: -1px; margin-left: 4px; flex: none; }
+  .lvl rect { fill: var(--grid); }
+  .lvl rect.on { fill: var(--ink-2); }
   .sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
   .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
@@ -88,6 +99,40 @@
   #tip .text { margin-top: 6px; color: var(--ink-2); white-space: normal; }
   [data-tip] { cursor: default; }
   [data-tip]:focus { outline: 2px solid var(--s1); outline-offset: 1px; }
+  .ci { display: flex; align-items: center; gap: 10px; }
+  .ci svg { flex: none; }
+  .ci .cv { font-variant-numeric: tabular-nums; }
+  .ci .cr { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .method { margin: 10px 0 0; padding-left: 18px; color: var(--ink-2); max-width: 90ch; }
+  .method li { margin: 4px 0; }
+  /* Model cards: small multiples, one per model. */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 12px; }
+  .mcard { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .mhead { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .mhead .sw { width: 12px; height: 12px; }
+  .mname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rank { margin-left: auto; font-size: 12px; color: var(--ink-2); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; flex: none; }
+  .hero { display: flex; align-items: baseline; gap: 8px; }
+  .hero .hv { font-size: 34px; font-weight: 600; line-height: 1; }
+  .hero .hk { font-size: 12px; color: var(--ink-2); }
+  .meter { height: 8px; border-radius: 4px; background: var(--empty); overflow: hidden; }
+  .meter > span { display: block; height: 100%; border-radius: 0 4px 4px 0; }
+  .ostrip { display: flex; gap: 2px; height: 14px; }
+  .ostrip > span { display: block; height: 100%; min-width: 3px; }
+  .ostrip > span:last-child { border-radius: 0 4px 4px 0; }
+  .ocount { font-size: 12px; color: var(--ink-2); margin-top: -4px; }
+  .mrows { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; font-size: 12px; }
+  .mrows .ml { color: var(--ink-2); }
+  .mrows .mv { text-align: right; font-variant-numeric: tabular-nums; }
+  .mbar { height: 6px; border-radius: 3px; background: var(--empty); overflow: hidden; }
+  .mbar > span { display: block; height: 100%; border-radius: 0 3px 3px 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: 12px; color: var(--ink-2); background: var(--page); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+  .chip.err { color: var(--critical); font-weight: 600; }
+  /* In-cell data bars for the leaderboard's metric columns. */
+  .dcell { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+  .dbar { width: 56px; height: 6px; border-radius: 3px; background: var(--empty); overflow: hidden; flex: none; }
+  .dbar > span { display: block; height: 100%; background: var(--seq-lo); border-radius: 0 3px 3px 0; }
   svg text { fill: var(--ink-2); font-size: 11px; }
   svg text.ink { fill: var(--ink); }
   svg text.muted { fill: var(--muted); }
@@ -121,9 +166,40 @@
     <div class="tiles" id="tiles"></div>
 
     <section>
+      <h2>Headline results</h2>
+      <p class="note">Reported the way public LLM leaderboards report: the share of tasks fully solved with its 95% confidence interval, ranks that only separate models whose intervals don't overlap, partial credit as F1, the failure rate, and cost per task next to the score.</p>
+      <div class="card scroll"><table id="headline"></table></div>
+      <details>
+        <summary>How these are computed</summary>
+        <ul class="method">
+          <li><b>Success rate</b>: share of cases solved exactly (every expected record cited, nothing extra, each with the right source), like the "% resolved" of SWE-bench or the accuracy of GAIA. Cases that errored count as unsolved.</li>
+          <li><b>95% CI</b>: Wilson score interval on the success rate. With few cases per test, intervals are wide; treat close scores as ties.</li>
+          <li><b>Rank</b>: as on LMArena, 1 + the number of models whose interval lies entirely above this model's, so models with overlapping intervals share a rank.</li>
+          <li><b>F1</b>: harmonic mean of record precision and recall per case, averaged over cases: partial credit, as in extraction benchmarks such as SQuAD and DROP.</li>
+          <li><b>Failure rate</b>: share of cases that ended in an API error or hit the turn limit without answering.</li>
+          <li><b>Cost per task</b>: agent tokens, seconds and turns per case, reported next to the score as HELM and Artificial Analysis do. On the score-against-cost charts, the frontier links the models that no other model beats on both score and cost.</li>
+          <li>Not shown: pass@k and pass^k (τ-bench), which need several runs of each case.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section>
+      <h2>Models at a glance</h2>
+      <p class="note" id="cards-note"></p>
+      <div class="cards" id="model-cards"></div>
+      <div class="legend" id="outcome-legend" style="margin-top:10px"></div>
+    </section>
+
+    <section>
       <h2>Leaderboard</h2>
       <p class="note">Each model's latest result for every case it has run. Metrics are means over cases, failed cases counted as 0. Click a column to sort.</p>
       <div class="card scroll"><table id="leaderboard"></table></div>
+    </section>
+
+    <section>
+      <h2>Case outcomes</h2>
+      <p class="note">How each model's cases ended: every expected record found and nothing extra, some records right, none right, or an error (API failure or turn limit). Shares of the model's cases, so models with different case counts compare.</p>
+      <div class="card"><div class="chart" id="outcomes"></div><div class="legend" id="outcomes-legend"></div></div>
     </section>
 
     <section>
@@ -204,7 +280,20 @@ const fmt = {
   tokens: (v) => (v == null ? "–" : v >= 1e6 ? `${(v / 1e6).toFixed(2)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}k` : String(Math.round(v))),
   date: (iso) => (iso ? iso.slice(0, 16).replace("T", " ") : "–"),
 };
-const label = (name) => name.replace(/_/g, " ");
+/** Display names: exact_match is the benchmark's success rate. */
+const LABELS = { exact_match: "success rate", f1: "F1", id_precision: "precision", id_recall: "recall" };
+const label = (name) => LABELS[name] ?? name.replace(/_/g, " ");
+/** Headline metrics first, the way leaderboards order their columns. */
+const METRIC_ORDER = ["exact_match", "f1", "id_precision", "id_recall"];
+
+/** Wilson score interval for k successes in n trials, at 95%. */
+function wilson(k, n) {
+  if (!n) return { lo: 0, hi: 0 };
+  const z = 1.96, p = k / n, d = 1 + (z * z) / n;
+  const centre = (p + (z * z) / (2 * n)) / d;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / d;
+  return { lo: Math.max(0, centre - half), hi: Math.min(1, centre + half) };
+}
 
 // Tooltip content: a title, label/value rows and optional free text.
 function tip(title, rows = [], text) {
@@ -214,17 +303,43 @@ function tip(title, rows = [], text) {
 
 // ---------- data ----------
 let runs = [];        // [{ folder, summary }], one per model
-let models = [];      // model specs, sorted; index = colour slot
+let models = [];      // model specs, grouped by family, most capable first; index = colour slot
+let families = [];    // model families, sorted
 const state = { test: "__all", metric: null, sort: { key: null, dir: -1 } };
 
 const modelOf = (s) => s.model?.spec ?? `${s.model?.provider}:${s.model?.modelId}`;
 const startOf = (s) => s.updatedAt ?? "";
 const testsWithCases = (s) => (s.tests ?? []).filter((t) => (t.cases ?? t.caseResults?.length ?? 0) > 0);
 
+/** Reasoning levels, least to most capable. */
+const LEVELS = ["off", "low", "high", "max"];
+
+/**
+ * A model's family and reasoning level: "ds-flash-reasoning-high" is family
+ * ds-flash at level high. A model without a level is a family of its own (level null).
+ */
+function familyOf(model) {
+  const m = model.match(/^(.*)-reasoning-(off|low|high|max)$/);
+  return m ? { family: m[1], level: m[2] } : { family: model, level: null };
+}
+
+/** Each model's own hue: slots in palette order over the models, grouped by family. */
 function colorOf(model) {
   const i = models.indexOf(model);
   return i >= 0 && i < 8 ? `var(--s${i + 1})` : "var(--other)";
 }
+
+/** Reasoning level as a 1-4 bar signal glyph (off = 1 bar, max = 4); empty for models without levels. */
+function levelGlyph(model) {
+  const { level } = familyOf(model);
+  if (!level) return "";
+  const on = LEVELS.indexOf(level) + 1;
+  const bars = [0, 1, 2, 3].map((i) => `<rect class="${i < on ? "on" : ""}" x="${i * 4}" y="${9 - (i * 2 + 3)}" width="3" height="${i * 2 + 3}" rx="0.5"/>`).join("");
+  return `<svg class="lvl" width="15" height="10" role="img" aria-label="reasoning ${level}"><title>reasoning: ${level}</title>${bars}</svg>`;
+}
+
+/** A model's swatch, name and reasoning glyph, for tables and cards. */
+const modelTag = (model) => `<span class="sw" style="background:${colorOf(model)}"></span> ${esc(model)}${levelGlyph(model)}`;
 
 function allTests() {
   const names = new Set();
@@ -265,6 +380,21 @@ function metricMean(cases, name) {
 
 const usageOf = (u) => ({ inputTokens: u?.inputTokens ?? 0, outputTokens: u?.outputTokens ?? 0, cachedInputTokens: u?.cachedInputTokens ?? 0 });
 
+/** How a case ended: exact match, partly right, nothing right, or an error (turn limit included). */
+function outcomeOf(c) {
+  if (c.error) return "error";
+  const m = c.metrics ?? {};
+  if (m.exact_match === 1) return "exact";
+  return (m.id_recall ?? 0) > 0 || (m.id_precision ?? 0) > 0 ? "partial" : "none";
+}
+const OUTCOMES = [
+  { key: "exact", name: "✓ Exact match", color: "var(--out-exact)" },
+  { key: "partial", name: "◐ Partly right", color: "var(--out-partial)" },
+  { key: "none", name: "○ Nothing right", color: "var(--out-none)" },
+  { key: "error", name: "✕ Error or turn limit", color: "var(--critical)" },
+];
+const outcomeLegend = () => OUTCOMES.map((o) => `<span class="item"><span class="sw" style="background:${o.color}"></span>${esc(o.name)}</span>`).join("");
+
 function aggregate(cases) {
   const metrics = {};
   // Only cases whose test reports a metric count towards it; null when none do.
@@ -272,8 +402,13 @@ function aggregate(cases) {
   const by = (f) => cases.map(f);
   const stat = (vals) => ({ mean: mean(vals), min: vals.length ? Math.min(...vals) : 0, max: vals.length ? Math.max(...vals) : 0 });
   const agent = cases.map((c) => usageOf(c.usage));
+  const outcomes = Object.fromEntries(OUTCOMES.map((o) => [o.key, cases.filter((c) => outcomeOf(c) === o.key).length]));
+  const solved = cases.filter((c) => c.metrics?.exact_match === 1).length;
   return {
     n: cases.length,
+    outcomes,
+    success: { k: solved, rate: cases.length ? solved / cases.length : null, ...wilson(solved, cases.length) },
+    failureRate: cases.length ? cases.filter((c) => c.error).length / cases.length : null,
     errors: cases.filter((c) => c.error).length,
     turnLimit: cases.filter((c) => c.turnLimitReached).length,
     metrics,
@@ -303,7 +438,8 @@ function metricNames() {
       for (const name of Object.keys(t.metrics ?? {})) if (!names.includes(name)) names.push(name);
     }
   }
-  return names;
+  const rank = (n) => (METRIC_ORDER.includes(n) ? METRIC_ORDER.indexOf(n) : METRIC_ORDER.length);
+  return names.map((n, i) => [n, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([n]) => n);
 }
 
 // ---------- chart primitives (plain SVG) ----------
@@ -412,13 +548,32 @@ function scatter(el, points, { xFmt = fmt.num, yFmt = fmt.score, yMax = 1, xLabe
   s += `<line class="axisline" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>`;
   s += `<text class="muted" x="${(m.l + W - m.r) / 2}" y="${H - 4}" text-anchor="middle">${esc(xLabel)}</text>`;
   s += `<text class="muted" x="${m.l}" y="${m.t - 2}" text-anchor="start">${esc(yLabel)}</text>`;
+  // Frontier: the points no other point beats on both score (higher) and cost (lower).
+  const frontier = [...points].sort((a, b) => a.x - b.x || b.y - a.y).filter((p, i, all) => all.slice(0, i).every((q) => q.y < p.y));
+  if (frontier.length > 1) {
+    s += `<polyline points="${frontier.map((p) => `${x(p.x)},${y(p.y)}`).join(" ")}" fill="none" stroke="var(--muted)" stroke-width="1.5"/>`;
+  }
+  // Labels: placed greedily, nudged until they clear the ones already placed.
+  const placed = [];
+  const labels = [];
+  for (const p of [...points].sort((a, b) => b.y - a.y || a.x - b.x)) {
+    const px = x(p.x), py = y(p.y);
+    const w = textWidth(p.label);
+    const anchor = px + 9 + w > W - m.r ? "end" : "start";
+    const left = anchor === "start" ? px + 9 : px - 9 - w;
+    let ly = py - 7;
+    // Nudge away from the nearer edge: down in the top half, up in the bottom half, clear of the x axis.
+    const step = py > H / 2 ? -13 : 13;
+    while (placed.some((b) => left < b.right && left + w > b.left && Math.abs(ly - b.y) < 13)) ly += step;
+    placed.push({ left, right: left + w, y: ly });
+    labels.push(`<text class="ink" x="${anchor === "start" ? px + 9 : px - 9}" y="${ly}" text-anchor="${anchor}">${esc(p.label)}</text>`);
+  }
   for (const p of points) {
     const px = x(p.x), py = y(p.y);
-    const anchor = px > W - 140 ? "end" : "start";
     s += `<g tabindex="0" data-tip="${p.tip}"><circle cx="${px}" cy="${py}" r="14" fill="transparent"/>`;
     s += `<circle cx="${px}" cy="${py}" r="5" fill="${p.color}" stroke="var(--surface)" stroke-width="2"/></g>`;
-    s += `<text class="ink" x="${px + (anchor === "start" ? 9 : -9)}" y="${py - 7}" text-anchor="${anchor}">${esc(p.label)}</text>`;
   }
+  s += labels.join("");
   el.innerHTML = s + `</svg>`;
 }
 
@@ -463,13 +618,31 @@ function render() {
   const metric = state.metric;
   const shown = view.map((v) => v.model);
 
-  $("model-legend").innerHTML = models
-    .filter((m) => shown.includes(m))
-    .map((m) => `<span class="item"><span class="sw" style="background:${colorOf(m)}"></span>${esc(m)}</span>`)
-    .join("");
+  // One group per family: its levels, most capable (most vivid) first.
+  $("model-legend").innerHTML = families.map((f) => {
+    const members = models.filter((m) => shown.includes(m) && familyOf(m).family === f);
+    if (!members.length) return "";
+    if (members.length === 1 && !familyOf(members[0]).level) {
+      return `<span class="item"><span class="sw" style="background:${colorOf(members[0])}"></span>${esc(members[0])}</span>`;
+    }
+    return `<span class="item fam"><b>${esc(f)}</b>${members.map((m) => `<span class="item"><span class="sw" style="background:${colorOf(m)}"></span>${esc(familyOf(m).level)}${levelGlyph(m)}</span>`).join("")}</span>`;
+  }).join("");
 
   renderTiles(view);
+  renderHeadline(view);
+  renderCards(view, metrics, metric);
   renderLeaderboard(view, metrics);
+
+  // Case outcomes: one 100% stacked bar per model.
+  hbars($("outcomes"), view.map((v) => {
+    const t = tip(v.model, OUTCOMES.map((o) => [o.name, `${v.agg.outcomes[o.key]} of ${v.agg.n}`]));
+    return {
+      label: v.model,
+      valueText: `${v.agg.outcomes.exact} of ${v.agg.n} exact`,
+      segments: OUTCOMES.map((o) => ({ value: v.agg.n ? v.agg.outcomes[o.key] / v.agg.n : 0, color: o.color, tip: t })),
+    };
+  }), { domainMax: 1, ticks: fmt.pct });
+  $("outcomes-legend").innerHTML = outcomeLegend();
 
   // Scores by metric: one small chart per metric.
   $("metric-charts").innerHTML = metrics.map((m, i) => `<div class="card"><h3>${esc(label(m))}</h3><div class="chart" id="mc-${i}"></div></div>`).join("");
@@ -482,8 +655,8 @@ function render() {
   });
 
   // Score against cost.
-  $("scatter-tokens-title").textContent = `${label(metric ?? "")} against agent tokens per case`;
-  $("scatter-time-title").textContent = `${label(metric ?? "")} against seconds per case`;
+  $("scatter-tokens-title").textContent = `${label(metric ?? "")} against agent tokens per case (line: efficiency frontier)`;
+  $("scatter-time-title").textContent = `${label(metric ?? "")} against seconds per case (line: efficiency frontier)`;
   const sp = (xv, xname, xf) => view.filter((v) => v.agg.metrics[metric] != null).map((v) => ({
     x: xv(v), y: v.agg.metrics[metric] ?? 0, label: v.model, color: colorOf(v.model),
     tip: tip(v.model, [[label(metric), fmt.score(v.agg.metrics[metric])], [xname, xf(xv(v))], ["Cases", v.agg.n]]),
@@ -538,13 +711,84 @@ function render() {
   renderCases(view, metrics);
 }
 
+/** One card per model, ranked by the selected metric: score, outcome mix, every metric, and cost. */
+function renderCards(view, metrics, metric) {
+  const ranked = [...view].sort((a, b) => (b.agg.metrics[metric] ?? -1) - (a.agg.metrics[metric] ?? -1) || a.model.localeCompare(b.model));
+  $("cards-note").textContent = `Ranked by ${label(metric ?? "")} over ${state.test === "__all" ? "all tests" : state.test}. The strip splits each model's cases by outcome; hover anything for details.`;
+  const bar = (value, color) => `<span style="width:${Math.max(0, Math.min(1, value ?? 0)) * 100}%;background:${color}"></span>`;
+  $("model-cards").innerHTML = ranked.map((v, i) => {
+    const color = colorOf(v.model);
+    const score = v.agg.metrics[metric];
+    const strip = OUTCOMES.filter((o) => v.agg.outcomes[o.key] > 0).map((o) =>
+      `<span tabindex="0" style="flex:${v.agg.outcomes[o.key]};background:${o.color}" data-tip="${tip(v.model, [[o.name, `${v.agg.outcomes[o.key]} of ${v.agg.n} cases`]])}"></span>`,
+    ).join("");
+    const rows = metrics.map((m) => {
+      const val = v.agg.metrics[m];
+      return `<span class="ml">${esc(label(m))}</span><span class="mbar" tabindex="0" data-tip="${tip(v.model, [[label(m), fmt.score(val)]])}">${bar(val, color)}</span><span class="mv">${fmt.score(val)}</span>`;
+    }).join("");
+    const chips = [
+      `<span class="chip" data-tip="${tip(v.model, [["Turns per case", fmt.num(v.agg.turns.mean)], ["Max", v.agg.turns.max]])}">${fmt.num(v.agg.turns.mean)} turns</span>`,
+      `<span class="chip" data-tip="${tip(v.model, [["Seconds per case", fmt.num(v.agg.seconds.mean)]])}">${fmt.num(v.agg.seconds.mean)} s</span>`,
+      `<span class="chip" data-tip="${tip(v.model, [["Agent tokens per case", fmt.tokens(v.agg.agent.input + v.agg.agent.output)]])}">${fmt.tokens(v.agg.agent.input + v.agg.agent.output)} tokens</span>`,
+      v.agg.errors ? `<span class="chip err">✕ ${v.agg.errors} error${v.agg.errors === 1 ? "" : "s"}</span>` : "",
+    ].join("");
+    return `<div class="mcard">
+      <div class="mhead"><span class="sw" style="background:${color}"></span><span class="mname" title="${esc(v.model)}">${esc(v.model)}</span>${levelGlyph(v.model)}<span class="rank">#${i + 1}</span></div>
+      <div class="hero"><span class="hv">${metric === "exact_match" ? fmt.pct(v.agg.success.rate) : fmt.score(score)}</span><span class="hk">${esc(label(metric ?? ""))} · ${v.agg.n} case${v.agg.n === 1 ? "" : "s"}${metric === "exact_match" ? `<br>95% CI ${fmt.pct(v.agg.success.lo)}–${fmt.pct(v.agg.success.hi)}` : ""}</span></div>
+      <div class="meter" tabindex="0" data-tip="${tip(v.model, [[label(metric ?? ""), fmt.score(score)]])}">${bar(score, color)}</div>
+      <div class="ostrip">${strip}</div>
+      <div class="ocount">${v.agg.outcomes.exact} exact · ${v.agg.outcomes.partial} partly right · ${v.agg.outcomes.none} nothing right${v.agg.outcomes.error ? ` · ${v.agg.outcomes.error} errored` : ""}</div>
+      <div class="mrows">${rows}</div>
+      <div class="chips">${chips}</div>
+    </div>`;
+  }).join("");
+  $("outcome-legend").innerHTML = outcomeLegend();
+}
+
+/** A rate with its 95% CI on a 0-100% track: the interval as a bar, the rate as a dot. */
+function ciMark(rate, lo, hi, color, w = 130) {
+  const x = (v) => 5 + v * (w - 10);
+  return `<svg width="${w}" height="16" aria-hidden="true">` +
+    `<line x1="${x(0)}" x2="${x(1)}" y1="8" y2="8" stroke="var(--grid)" stroke-width="2" stroke-linecap="round"/>` +
+    `<line x1="${x(lo)}" x2="${x(hi)}" y1="8" y2="8" stroke="${color}" stroke-opacity="0.45" stroke-width="6" stroke-linecap="round"/>` +
+    `<circle cx="${x(rate)}" cy="8" r="4.5" fill="${color}" stroke="var(--surface)" stroke-width="2"/></svg>`;
+}
+
+/** Leaderboard-style headline: CI-aware rank, success rate with CI, F1, failure rate and cost per task. */
+function renderHeadline(view) {
+  const rows = view.filter((v) => v.agg.n > 0).map((v) => ({ v, s: v.agg.success, f1: v.agg.metrics.f1 }));
+  for (const r of rows) r.rank = 1 + rows.filter((o) => o.s.lo > r.s.hi).length;
+  rows.sort((a, b) => a.rank - b.rank || (b.s.rate ?? 0) - (a.s.rate ?? 0) || (b.f1 ?? 0) - (a.f1 ?? 0) || a.v.model.localeCompare(b.v.model));
+  const head = ["Rank", "Model", "Success rate (95% CI)", "F1", "Failure rate", "Cases", "Tokens / task", "Seconds / task", "Turns / task"];
+  const num = new Set([0, 3, 4, 5, 6, 7, 8]);
+  $("headline").innerHTML =
+    `<thead><tr>${head.map((h, i) => `<th class="${num.has(i) ? "num" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map(({ v, s, f1, rank }) => {
+      const color = colorOf(v.model);
+      const shared = rows.filter((o) => o.rank === rank).length > 1;
+      const rankTip = tip(`Rank ${rank}`, [], shared
+        ? "Shared: the 95% intervals of these models overlap, so the data can't separate them."
+        : `${rank - 1} model(s) are clearly better: their whole interval lies above this one.`);
+      const ciTip = tip(v.model, [["Success rate", fmt.pct(s.rate)], ["Solved", `${s.k} of ${v.agg.n}`], ["95% CI", `${fmt.pct(s.lo)} – ${fmt.pct(s.hi)}`]]);
+      return `<tr><td class="num" tabindex="0" data-tip="${rankTip}">${rank}${shared ? "=" : ""}</td>` +
+        `<td>${modelTag(v.model)}</td>` +
+        `<td><div class="ci" tabindex="0" data-tip="${ciTip}">${ciMark(s.rate ?? 0, s.lo, s.hi, color)}<span class="cv">${fmt.pct(s.rate)}</span><span class="cr">${fmt.pct(s.lo)}–${fmt.pct(s.hi)}</span></div></td>` +
+        `<td class="num">${fmt.score(f1)}</td>` +
+        `<td class="num">${v.agg.failureRate ? `<span class="flag err">✕ ${fmt.pct(v.agg.failureRate)}</span>` : "0%"}</td>` +
+        `<td class="num">${v.agg.n}</td>` +
+        `<td class="num">${fmt.tokens(v.agg.agent.input + v.agg.agent.output)}</td>` +
+        `<td class="num">${fmt.num(v.agg.seconds.mean)}</td>` +
+        `<td class="num">${fmt.num(v.agg.turns.mean)}</td></tr>`;
+    }).join("") + `</tbody>`;
+}
+
 function renderTiles(view) {
   const latest = runs.map((r) => startOf(r.summary)).filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b)).pop();
-  const best = [...view].filter((v) => v.agg.metrics[state.metric] != null).sort((a, b) => (b.agg.metrics[state.metric] ?? 0) - (a.agg.metrics[state.metric] ?? 0))[0];
+  const best = [...view].filter((v) => v.agg.success.rate != null).sort((a, b) => b.agg.success.rate - a.agg.success.rate || (b.agg.metrics.f1 ?? 0) - (a.agg.metrics.f1 ?? 0))[0];
   const tiles = [
     ["Models compared", view.length, `${models.length} with results`],
     ["Cases per model", view.length ? Math.max(...view.map((v) => v.agg.n)) : 0, selectedTests().join(", ")],
-    [`Best ${label(state.metric ?? "")}`, best ? fmt.score(best.agg.metrics[state.metric]) : "–", best?.model ?? ""],
+    ["Top success rate", best ? fmt.pct(best.agg.success.rate) : "–", best ? `${best.model} · 95% CI ${fmt.pct(best.agg.success.lo)}–${fmt.pct(best.agg.success.hi)}` : ""],
     ["Last updated", fmt.date(latest), latest ? "Central European Time" : ""],
   ];
   $("tiles").innerHTML = tiles.map(([k, v, d]) => `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="d">${esc(d)}</div></div>`).join("");
@@ -555,13 +799,16 @@ const latestOf = (cases) => cases.map((c) => c.updatedAt).filter(Boolean).sort((
 
 function renderLeaderboard(view, metrics) {
   const cols = [
-    { key: "model", name: "Model", get: (v) => v.model, html: (v) => `<span class="sw" style="background:${colorOf(v.model)}"></span> ${esc(v.model)}` },
+    { key: "model", name: "Model", get: (v) => v.model, html: (v) => modelTag(v.model) },
     { key: "run", name: "Updated", get: (v) => latestOf(v.cases), html: (v) => esc(fmt.date(latestOf(v.cases))) },
     { key: "tests", name: "Tests", get: (v) => v.picks.map((p) => p.t.test).join(", ") },
     { key: "n", name: "Cases", num: true, get: (v) => v.agg.n },
     { key: "errors", name: "Errors", num: true, get: (v) => v.agg.errors },
     { key: "limit", name: "Turn limit hit", num: true, get: (v) => v.agg.turnLimit },
-    ...metrics.map((m) => ({ key: `m:${m}`, name: label(m), num: true, get: (v) => v.agg.metrics[m], fmt: fmt.score })),
+    ...metrics.map((m) => ({
+      key: `m:${m}`, name: label(m), num: true, get: (v) => v.agg.metrics[m],
+      html: (v) => `<div class="dcell"><span class="dbar"><span style="width:${(v.agg.metrics[m] ?? 0) * 100}%"></span></span>${fmt.score(v.agg.metrics[m])}</div>`,
+    })),
     { key: "turns", name: "Turns / case", num: true, get: (v) => v.agg.turns.mean, fmt: fmt.num },
     { key: "secs", name: "Seconds / case", num: true, get: (v) => v.agg.seconds.mean, fmt: fmt.num },
     { key: "tin", name: "Input tokens / case", num: true, get: (v) => v.agg.agent.input, fmt: fmt.tokens },
@@ -644,7 +891,7 @@ function renderCases(view, metrics) {
     all.map((c) => {
       const u = usageOf(c.usage);
       const status = [c.error ? `<span class="flag err">✕ Error: ${esc(c.error)}</span>` : "", c.turnLimitReached ? `<span class="flag limit">⏱ Turn limit</span>` : ""].filter(Boolean).join(" ") || "OK";
-      return `<tr><td>${esc(c.test)}</td><td>${esc(c.caseId)}</td><td><span class="sw" style="background:${colorOf(c.model)}"></span> ${esc(c.model)}</td><td>${esc(c.difficulty ?? "–")}</td>` +
+      return `<tr><td>${esc(c.test)}</td><td>${esc(c.caseId)}</td><td>${modelTag(c.model)}</td><td>${esc(c.difficulty ?? "–")}</td>` +
         metrics.map((m) => `<td class="num">${fmt.score(c.metrics?.[m])}</td>`).join("") +
         `<td class="num">${c.turns ?? "–"}</td><td class="num">${fmt.num(c.seconds)}</td><td class="num">${fmt.tokens(u.inputTokens)}</td><td class="num">${u.inputTokens ? fmt.pct(u.cachedInputTokens / u.inputTokens) : "–"}</td><td class="num">${fmt.tokens(u.outputTokens)}</td>` +
         `<td class="num">${c.activity?.dbQueries ?? "–"}${c.activity?.dbQueriesFailed ? ` (${c.activity.dbQueriesFailed} failed)` : ""}</td><td class="num">${c.activity?.filesChecked ?? "–"}</td>` +
@@ -677,7 +924,13 @@ document.addEventListener("focusout", () => (tipEl.style.display = "none"));
 // ---------- loading ----------
 function start(loaded, source) {
   runs = loaded.filter((r) => r.summary && r.summary.model);
-  models = [...new Set(runs.map((r) => modelOf(r.summary)))].sort();
+  const specs = [...new Set(runs.map((r) => modelOf(r.summary)))];
+  families = [...new Set(specs.map((m) => familyOf(m).family))].sort();
+  // Grouped by family, the most capable level first.
+  models = specs.sort((a, b) => {
+    const [fa, fb] = [familyOf(a), familyOf(b)];
+    return families.indexOf(fa.family) - families.indexOf(fb.family) || LEVELS.indexOf(fb.level ?? "max") - LEVELS.indexOf(fa.level ?? "max");
+  });
   if (!runs.length) {
     $("source").textContent = `${source}: no results found.`;
     return;

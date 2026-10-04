@@ -45,7 +45,7 @@ describe("runTest", () => {
       log: quiet,
     });
 
-    const perfect = { id_precision: 1, id_recall: 1, file_accuracy: 1, claim_recall: 1, exact_match: 1 };
+    const perfect = { id_precision: 1, id_recall: 1, f1: 1, file_accuracy: 1, claim_recall: 1, exact_match: 1 };
     assert.equal(run.test, "txt-matching");
     // Every case is run; the scripted answer is case-0001's.
     assert.equal(run.results.length, readdirSync(join(benchmarkDir, "txt-matching", "data")).length);
