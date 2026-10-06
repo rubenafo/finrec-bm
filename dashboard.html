@@ -164,7 +164,7 @@
 
     <section>
       <h2>Headline results</h2>
-      <p class="note">The key result is the number of cases each model passed. A case passes only on an exact match; every other case failed, whether the answer was wrong, partly right or never came (an error). Next to it: the pass rate with its 95% confidence interval, ranks that only separate models whose intervals don't overlap, partial credit as F1, and cost per task.</p>
+      <p class="note">The key result is the number of cases each model passed. A case passes only on an exact match; every other case failed, whether the answer was wrong, partly right or never came (an error). Next to it: the pass rate with its 95% confidence interval, ranks that only separate models whose intervals don't overlap, partial credit as F1, and cost per task. Click a column to sort.</p>
       <div class="card scroll"><table id="headline"></table></div>
       <details>
         <summary>How these are computed</summary>
@@ -297,7 +297,7 @@ function tip(title, rows = [], text) {
 let runs = [];        // [{ folder, summary }], one per model
 let models = [];      // model specs, grouped by family, most capable first; index = colour slot
 let families = [];    // model families, sorted
-const state = { test: "__all", metric: null, sort: { key: null, dir: -1 } };
+const state = { test: "__all", metric: null, sort: { key: null, dir: -1 }, headSort: { key: null, dir: 1 } };
 
 const modelOf = (s) => s.model?.spec ?? `${s.model?.provider}:${s.model?.modelId}`;
 const startOf = (s) => s.updatedAt ?? "";
@@ -361,8 +361,13 @@ function buildView() {
     const cases = picks.flatMap(({ run, t }) => (t.caseResults ?? []).map((c) => ({ ...c, test: t.test, model, runId: run.folder, metricNames: Object.keys(t.metrics ?? {}) })));
     view.push({ model, picks, cases, agg: aggregate(cases) });
   }
-  return view;
+  return view.sort(byPassRate);
 }
+
+/** The default model order in every chart and table: pass rate, best first; ties by cases passed, F1, then name. */
+const byPassRate = (a, b) =>
+  (b.agg.success.rate ?? -1) - (a.agg.success.rate ?? -1) || b.agg.passed - a.agg.passed ||
+  (b.agg.metrics.f1 ?? -1) - (a.agg.metrics.f1 ?? -1) || a.model.localeCompare(b.model);
 
 /** Mean of a metric over the cases that report it, failed cases counted as 0; null when none report it. */
 function metricMean(cases, name) {
@@ -637,12 +642,10 @@ function render() {
   }), { domainMax: 1, ticks: fmt.pct });
   $("outcomes-legend").innerHTML = outcomeLegend();
 
-  // Scores by metric: one small chart per metric, highest score on top (models
-  // without the metric last, ties by name).
+  // Scores by metric: one small chart per metric, models by pass rate like every chart.
   $("metric-charts").innerHTML = metrics.map((m, i) => `<div class="card"><h3>${esc(label(m))}</h3><div class="chart" id="mc-${i}"></div></div>`).join("");
   metrics.forEach((m, i) => {
-    const ranked = [...view].sort((a, b) => (b.agg.metrics[m] ?? -1) - (a.agg.metrics[m] ?? -1) || a.model.localeCompare(b.model));
-    hbars($(`mc-${i}`), ranked.map((v) => ({
+    hbars($(`mc-${i}`), view.map((v) => ({
       label: v.model,
       valueText: v.agg.metrics[m] == null ? "– (test not run)" : fmt.score(v.agg.metrics[m]),
       segments: [{ value: v.agg.metrics[m] ?? 0, color: colorOf(v.model), tip: tip(v.model, [[label(m), fmt.score(v.agg.metrics[m])], ["Cases", v.agg.n]]) }],
@@ -662,21 +665,20 @@ function render() {
   renderCaseHeatmap(view, metric, metrics);
   renderGroupHeatmaps(view, metric);
 
-  // Effort and tokens: cost charts, lowest (cheapest) on top, ties by name.
-  const lowestFirst = (value) => [...view].sort((a, b) => value(a) - value(b) || a.model.localeCompare(b.model));
+  // Effort and tokens: models by pass rate, so cost reads against the result.
 
   // Effort.
-  ranges($("turns-range"), lowestFirst((v) => v.agg.turns.mean).map((v) => ({
+  ranges($("turns-range"), view.map((v) => ({
     label: v.model, color: colorOf(v.model), ...v.agg.turns,
     tip: tip(v.model, [["Mean", fmt.num(v.agg.turns.mean)], ["Min", v.agg.turns.min], ["Max", v.agg.turns.max], ["Hit turn limit", `${v.agg.turnLimit} of ${v.agg.n}`]]),
   })));
-  ranges($("seconds-range"), lowestFirst((v) => v.agg.seconds.mean).map((v) => ({
+  ranges($("seconds-range"), view.map((v) => ({
     label: v.model, color: colorOf(v.model), ...v.agg.seconds,
     tip: tip(v.model, [["Mean", fmt.num(v.agg.seconds.mean)], ["Min", fmt.num(v.agg.seconds.min)], ["Max", fmt.num(v.agg.seconds.max)]]),
   })));
 
   // Tokens.
-  hbars($("input-tokens"), lowestFirst((v) => v.agg.agent.input).map((v) => {
+  hbars($("input-tokens"), view.map((v) => {
     const { input, cached } = v.agg.agent;
     const share = input ? cached / input : 0;
     const t = tip(v.model, [["Input per case", fmt.tokens(input)], ["Cached", `${fmt.tokens(cached)} (${fmt.pct(share)})`], ["Not cached", fmt.tokens(input - cached)]]);
@@ -686,13 +688,13 @@ function render() {
     };
   }), { ticks: fmt.tokens });
   $("input-legend").innerHTML = `<span class="item"><span class="sw" style="background:var(--seq-lo)"></span>Read from cache</span><span class="item"><span class="sw" style="background:var(--seq-hi)"></span>Not cached</span>`;
-  hbars($("output-tokens"), lowestFirst((v) => v.agg.agent.output).map((v) => ({
+  hbars($("output-tokens"), view.map((v) => ({
     label: v.model, valueText: fmt.tokens(v.agg.agent.output),
     segments: [{ value: v.agg.agent.output, color: colorOf(v.model), tip: tip(v.model, [["Output per case", fmt.tokens(v.agg.agent.output)]]) }],
   })), { ticks: fmt.tokens });
 
   // Activity.
-  hbars($("db-queries"), lowestFirst((v) => v.agg.activity.dbQueries).map((v) => {
+  hbars($("db-queries"), view.map((v) => {
     const a = v.agg.activity;
     const t = tip(v.model, [["Queries per case", fmt.num(a.dbQueries)], ["Succeeded", fmt.num(a.dbQueriesSucceeded)], ["Failed", fmt.num(a.dbQueriesFailed)]]);
     return {
@@ -708,10 +710,10 @@ function render() {
 
 }
 
-/** One card per model, ranked by the selected metric: score, outcome mix, every metric, and cost. */
+/** One card per model, ranked by pass rate: score, outcome mix, every metric, and cost. */
 function renderCards(view, metrics, metric) {
-  const ranked = [...view].sort((a, b) => (b.agg.metrics[metric] ?? -1) - (a.agg.metrics[metric] ?? -1) || a.model.localeCompare(b.model));
-  $("cards-note").textContent = `Ranked by ${label(metric ?? "")} over ${state.test === "__all" ? "all tests" : state.test}. The strip splits each model's cases by outcome; hover anything for details.`;
+  const ranked = view;
+  $("cards-note").textContent = `Ranked by pass rate over ${state.test === "__all" ? "all tests" : state.test}. The strip splits each model's cases by outcome; hover anything for details.`;
   const bar = (value, color) => `<span style="width:${Math.max(0, Math.min(1, value ?? 0)) * 100}%;background:${color}"></span>`;
   $("model-cards").innerHTML = ranked.map((v, i) => {
     const color = colorOf(v.model);
@@ -756,10 +758,31 @@ function renderHeadline(view) {
   const rows = view.filter((v) => v.agg.n > 0).map((v) => ({ v, s: v.agg.success, f1: v.agg.metrics.f1 }));
   for (const r of rows) r.rank = 1 + rows.filter((o) => o.s.lo > r.s.hi).length;
   rows.sort((a, b) => a.rank - b.rank || (b.s.rate ?? 0) - (a.s.rate ?? 0) || b.v.agg.passed - a.v.agg.passed || (b.f1 ?? 0) - (a.f1 ?? 0) || a.v.model.localeCompare(b.v.model));
-  const head = ["Rank", "Model", "Passed", "Failed", "Pass rate (95% CI)", "F1", "Tokens / task", "Seconds / task", "Turns / task"];
-  const num = new Set([0, 2, 3, 5, 6, 7, 8]);
+  // `first` is the direction of a column's first click: best first for rank, A-Z for models, high to low for the rest.
+  const cols = [
+    { key: "rank", name: "Rank", num: true, first: 1, get: (r) => r.rank },
+    { key: "model", name: "Model", first: 1, get: (r) => r.v.model },
+    { key: "passed", name: "Passed", num: true, get: (r) => r.v.agg.passed },
+    { key: "failed", name: "Failed", num: true, get: (r) => r.v.agg.failed },
+    { key: "rate", name: "Pass rate (95% CI)", get: (r) => r.s.rate },
+    { key: "f1", name: "F1", num: true, get: (r) => r.f1 },
+    { key: "tokens", name: "Tokens / task", num: true, get: (r) => r.v.agg.agent.input + r.v.agg.agent.output },
+    { key: "secs", name: "Seconds / task", num: true, get: (r) => r.v.agg.seconds.mean },
+    { key: "turns", name: "Turns / task", num: true, get: (r) => r.v.agg.turns.mean },
+  ];
+  // Default: rank order. The sort is stable, so ties keep it.
+  const { key: sortKey, dir } = state.headSort;
+  const col = cols.find((c) => c.key === sortKey);
+  if (col) {
+    rows.sort((a, b) => {
+      const x = col.get(a), y = col.get(b);
+      if (x == null || y == null) return (x == null) - (y == null); // missing values last
+      return (typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y))) * dir;
+    });
+  }
+  const arrow = (c) => (c.key === sortKey ? (dir < 0 ? " ▾" : " ▴") : "");
   $("headline").innerHTML =
-    `<thead><tr>${head.map((h, i) => `<th class="${num.has(i) ? "num" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>` +
+    `<thead><tr>${cols.map((c) => `<th class="sortable${c.num ? " num" : ""}" data-sort="${esc(c.key)}">${esc(c.name)}${arrow(c)}</th>`).join("")}</tr></thead><tbody>` +
     rows.map(({ v, s, f1, rank }) => {
       const color = colorOf(v.model);
       const shared = rows.filter((o) => o.rank === rank).length > 1;
@@ -778,6 +801,12 @@ function renderHeadline(view) {
         `<td class="num">${fmt.num(v.agg.seconds.mean)}</td>` +
         `<td class="num">${fmt.num(v.agg.turns.mean)}</td></tr>`;
     }).join("") + `</tbody>`;
+  $("headline").querySelectorAll("th[data-sort]").forEach((th) => th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    const c = cols.find((x) => x.key === key);
+    state.headSort = { key, dir: key === sortKey ? -dir : c.first ?? -1 };
+    renderHeadline(view);
+  }));
 }
 
 function renderTiles(view) {
@@ -815,11 +844,11 @@ function renderLeaderboard(view, metrics) {
     { key: "q", name: "DB queries / case", num: true, get: (v) => v.agg.activity.dbQueries, fmt: fmt.num },
     { key: "f", name: "Files / case", num: true, get: (v) => v.agg.activity.filesChecked, fmt: fmt.num },
   ];
-  // Default: the selected metric, best first. Numbers sort descending first, text ascending.
-  const sortKey = state.sort.key ?? (state.metric ? `m:${state.metric}` : "model");
-  const col = cols.find((c) => c.key === sortKey) ?? cols[0];
-  const dir = state.sort.key ? state.sort.dir : col.num ? -1 : 1;
-  const rows = [...view].sort((a, b) => {
+  // Default: pass rate, best first (the view's order). A clicked column sorts numbers descending first, text ascending.
+  const sortKey = state.sort.key;
+  const col = cols.find((c) => c.key === sortKey);
+  const dir = state.sort.dir;
+  const rows = !col ? view : [...view].sort((a, b) => {
     const x = col.get(a), y = col.get(b);
     return (typeof x === "number" && typeof y === "number" ? x - y : String(x ?? "").localeCompare(String(y ?? ""))) * dir;
   });

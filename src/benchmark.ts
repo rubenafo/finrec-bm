@@ -6,7 +6,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { loadEnv } from "./common/env.js";
-import { availableModelSpecs, createModel, formatModelSpec, modelFamilies, providers, resolveModelList, type ModelSpec } from "./common/model.js";
+import { availableModelSpecs, createModel, formatModelSpec, hasApiKey, modelFamilies, modelProviders, providers, resolveModelList, type ModelSpec } from "./common/model.js";
 import { matchNames } from "./common/pattern.js";
 import { DEFAULT_MAX_TURNS } from "./common/agent.js";
 import { limiter } from "./common/limit.js";
@@ -32,7 +32,8 @@ options:
               a family: ${Object.keys(modelFamilies).join(", ")}
               a regex over the listed models: opus, ds-.*-high
             (default: FINREC_MODEL, else every listed model whose API key is
-            set); see npm run show-models
+            set); models whose provider has no API key are skipped; see
+            npm run show-models
             providers: ${providers.join(", ")}
   --test    comma-separated tests to run, by name or regex (default: all)
   --case    comma-separated cases to run within the selected tests, e.g.
@@ -104,16 +105,27 @@ if (!/^\d+$/.test(concurrencyText.trim()) || concurrency < 1) {
 
 let models: ModelSpec[];
 try {
-  const stated = values.model ?? npmFlag("model") ?? (process.env.FINREC_MODEL || undefined);
-  if (stated === undefined) {
-    // No model stated: every listed model that has an API key.
+  const flag = values.model ?? npmFlag("model");
+  const stated = flag ?? (process.env.FINREC_MODEL || undefined);
+  // Only models whose provider has an API key run; the others are skipped with a warning.
+  const resolved = stated === undefined ? [] : resolveModelList(stated);
+  models = resolved.filter((m) => hasApiKey(m));
+  const skipped = resolved.filter((m) => !hasApiKey(m));
+  const keys = [...new Set(skipped.map((m) => modelProviders[m.provider]!.apiKeyEnv))].join(", ");
+  const missing = `no API key (${keys}) for ${skipped.map(formatModelSpec).join(", ")}`;
+  if (models.length === 0 && flag !== undefined) {
+    throw new Error(`${missing}: set the key in .env, or choose another model (see npm run show-models)`);
+  }
+  if (models.length === 0) {
+    // No usable model stated (no --model, and FINREC_MODEL unset or without a key): every listed model that has an API key.
     const withKeys = availableModelSpecs();
     if (withKeys.length === 0) {
       throw new Error("no model given and no API key set: set a provider's key in .env (see npm run show-models), or pass --model");
     }
+    if (skipped.length > 0) console.warn(`benchmark: FINREC_MODEL has ${missing}; running every model with an API key instead`);
     models = resolveModelList(withKeys.join(","));
-  } else {
-    models = resolveModelList(stated);
+  } else if (skipped.length > 0) {
+    console.warn(`benchmark: skipping models with ${missing}`);
   }
 } catch (err) {
   fail(errorText(err));

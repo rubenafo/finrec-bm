@@ -164,8 +164,14 @@ export function knownModelSpecs(): string[] {
  */
 export function availableModelSpecs(env: NodeJS.ProcessEnv = process.env): string[] {
   return Object.values(modelProviders)
-    .filter((p) => p.apiKeyEnv === undefined || p.apiKey(env) !== undefined)
+    .filter((p) => hasApiKey({ provider: p.name, modelId: "" }, env))
     .flatMap((p) => (p.models ?? []).map((modelId) => formatModelSpec({ provider: p.name, modelId })));
+}
+
+/** Whether a model's provider has the API key it needs (Bedrock uses the AWS credential chain, so always does). */
+export function hasApiKey({ provider }: ModelSpec, env: NodeJS.ProcessEnv = process.env): boolean {
+  const p = modelProviders[provider]!;
+  return p.apiKeyEnv === undefined || p.apiKey(env) !== undefined;
 }
 
 /**

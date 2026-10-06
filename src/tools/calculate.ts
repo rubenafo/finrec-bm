@@ -216,7 +216,7 @@ function evaluate(source: string, names: Map<string, Fraction>): { name?: string
 export const calculate: Tool = {
   name: "calculate",
   description:
-    "Evaluate arithmetic exactly, with no floating-point error. Use it for every sum, difference, conversion, allocation and rounding. " +
+    "Evaluate arithmetic exactly, with no floating-point error. Use it for arithmetic outside the database (amounts from files or documents, combining query results) and for every division and rounding; sums and products of database amounts can be done exactly in SQL. " +
     "Each expression may use numbers (1250.00, -20700, 1.2e6), + - * /, parentheses, a postfix % (21% is 0.21) and the functions " +
     "sum(a, b, ...), round(x, places) (halves away from zero; places 2 for cents, -3 for thousands, default 0), abs(x), min(...) and max(...). " +
     "Write numbers without thousands separators. An expression can name its result, as `net = 28053.85 / (1 + 21%)`, " +

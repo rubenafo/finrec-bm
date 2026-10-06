@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { loadEnv } from "../src/common/env.js";
-import { availableModelSpecs, createModel, deepseekModels, formatModelSpec, knownModelSpecs, modelProviders, parseModelSpec, providers, resolveModelList, resolveModels } from "../src/common/model.js";
+import { availableModelSpecs, createModel, deepseekModels, formatModelSpec, hasApiKey, knownModelSpecs, modelProviders, parseModelSpec, providers, resolveModelList, resolveModels } from "../src/common/model.js";
 import { matchNames } from "../src/common/pattern.js";
 
 const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "AWS_REGION"];
@@ -38,6 +38,13 @@ describe("model specs", () => {
     assert.deepEqual(both, knownModelSpecs());
     assert.ok(both.includes("anthropic:claude-opus-5") && both.includes("ds-flash-reasoning-off"));
     assert.deepEqual(availableModelSpecs({ ANTHROPIC_API_KEY: "", DEEPSEEK_API_KEY: "k" }).length, 8, "blank keys are unset");
+  });
+
+  it("knows whether a model's provider has its API key", () => {
+    const env = { DEEPSEEK_API_KEY: "k", ANTHROPIC_API_KEY: "" };
+    assert.equal(hasApiKey(parseModelSpec("ds-flash-reasoning-off"), env), true);
+    assert.equal(hasApiKey(parseModelSpec("anthropic:claude-opus-5"), env), false, "blank keys are unset");
+    assert.equal(hasApiKey(parseModelSpec("bedrock:any-model"), {}), true, "Bedrock uses the AWS credential chain");
   });
 
   it("formats DeepSeek models without the provider prefix", () => {

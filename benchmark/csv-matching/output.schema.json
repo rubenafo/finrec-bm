@@ -20,7 +20,7 @@
       "record_id": {
         "type": "string",
         "minLength": 1,
-        "description": "ID of the record: a CSV row's ID (first column), a minutes item's ID, or a table row's primary key."
+        "description": "ID of the record: a CSV row's ID (first column), a minutes item's ID, or a table row's primary key. Emails and other documents without item IDs are not records and are not listed."
       },
       "reasoning": {
         "type": "string",
