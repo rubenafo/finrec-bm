@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseModelSpec } from "./common/model.js";
-import { caseIds, type CaseResult } from "./runner.js";
+import { caseIds, caseMeta, type CaseResult } from "./runner.js";
 import { buildModelSummary, buildResultsSummary, isoInCet, type ModelInfo, type ResultsSummary, type TestRun } from "./summary.js";
 
 /** A model's folder under results/: its spec, with ":" (not allowed in Windows paths) as "_". */
@@ -55,7 +55,12 @@ export function loadResults(resultsDir: string, benchmarkDir: string): ModelResu
         }
         if (typeof result.model !== "string" || modelFolder(result.model) !== folder) continue;
         spec = result.model;
-        results.push({ ...result, finishedAt: result.finishedAt ?? isoInCet(statSync(file).mtime) });
+        results.push({
+          ...result,
+          // Difficulty and tags describe the case, not the run: take today's meta.json, so retagging needs no rerun.
+          ...caseMeta(join(benchmarkDir, test, "data", caseId)),
+          finishedAt: result.finishedAt ?? isoInCet(statSync(file).mtime),
+        });
       }
       if (results.length > 0) testRuns.push({ test, results });
     }

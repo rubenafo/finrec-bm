@@ -79,15 +79,12 @@
   th.sortable { cursor: pointer; user-select: none; }
   th.sortable:hover { color: var(--ink); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  td.wrap { white-space: normal; min-width: 280px; max-width: 520px; color: var(--ink-2); }
   tr:hover td { background: var(--hover); }
   .flag { font-size: 12px; font-weight: 600; }
   .flag.err { color: var(--critical); }
-  .flag.limit { color: var(--ink-2); }
   details { margin-top: 10px; }
   summary { cursor: pointer; color: var(--ink-2); font-size: 12px; }
   .empty { padding: 48px 16px; text-align: center; color: var(--ink-2); }
-  .tag { display: inline-block; font-size: 11px; color: var(--ink-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin: 0 4px 2px 0; }
   #tip {
     position: fixed; z-index: 10; pointer-events: none; display: none; max-width: 360px;
     background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 8px;
@@ -167,16 +164,16 @@
 
     <section>
       <h2>Headline results</h2>
-      <p class="note">Reported the way public LLM leaderboards report: the share of tasks fully solved with its 95% confidence interval, ranks that only separate models whose intervals don't overlap, partial credit as F1, the failure rate, and cost per task next to the score.</p>
+      <p class="note">The key result is the number of cases each model passed. A case passes only on an exact match; every other case failed, whether the answer was wrong, partly right or never came (an error). Next to it: the pass rate with its 95% confidence interval, ranks that only separate models whose intervals don't overlap, partial credit as F1, and cost per task.</p>
       <div class="card scroll"><table id="headline"></table></div>
       <details>
         <summary>How these are computed</summary>
         <ul class="method">
-          <li><b>Success rate</b>: share of cases solved exactly (every expected record cited, nothing extra, each with the right source), like the "% resolved" of SWE-bench or the accuracy of GAIA. Cases that errored count as unsolved.</li>
-          <li><b>95% CI</b>: Wilson score interval on the success rate. With few cases per test, intervals are wide; treat close scores as ties.</li>
+          <li><b>Passed</b>: cases answered with an exact match (every expected record cited, nothing extra, each with the right source), like the "resolved" tasks of SWE-bench. <b>Pass rate</b> is passed cases over all cases.</li>
+          <li><b>Failed</b>: every case that didn't pass: wrong or partly right answers, and cases that ended in an error (API failure or the turn limit), which are also counted on their own.</li>
+          <li><b>95% CI</b>: Wilson score interval on the pass rate. With few cases per test, intervals are wide; treat close scores as ties.</li>
           <li><b>Rank</b>: as on LMArena, 1 + the number of models whose interval lies entirely above this model's, so models with overlapping intervals share a rank.</li>
           <li><b>F1</b>: harmonic mean of record precision and recall per case, averaged over cases: partial credit, as in extraction benchmarks such as SQuAD and DROP.</li>
-          <li><b>Failure rate</b>: share of cases that ended in an API error or hit the turn limit without answering.</li>
           <li><b>Cost per task</b>: agent tokens, seconds and turns per case, reported next to the score as HELM and Artificial Analysis do. On the score-against-cost charts, the frontier links the models that no other model beats on both score and cost.</li>
           <li>Not shown: pass@k and pass^k (τ-bench), which need several runs of each case.</li>
         </ul>
@@ -255,11 +252,6 @@
       </div>
     </section>
 
-    <section>
-      <h2>Case details</h2>
-      <div class="card scroll"><table id="cases"></table></div>
-    </section>
-
   </div>
 </main>
 <div id="tip" role="tooltip"></div>
@@ -280,8 +272,8 @@ const fmt = {
   tokens: (v) => (v == null ? "–" : v >= 1e6 ? `${(v / 1e6).toFixed(2)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}k` : String(Math.round(v))),
   date: (iso) => (iso ? iso.slice(0, 16).replace("T", " ") : "–"),
 };
-/** Display names: exact_match is the benchmark's success rate. */
-const LABELS = { exact_match: "success rate", f1: "F1", id_precision: "precision", id_recall: "recall" };
+/** Display names: exact_match is the benchmark's pass rate. */
+const LABELS = { exact_match: "pass rate", f1: "F1", id_precision: "precision", id_recall: "recall" };
 const label = (name) => LABELS[name] ?? name.replace(/_/g, " ");
 /** Headline metrics first, the way leaderboards order their columns. */
 const METRIC_ORDER = ["exact_match", "f1", "id_precision", "id_recall"];
@@ -388,7 +380,7 @@ function outcomeOf(c) {
   return (m.id_recall ?? 0) > 0 || (m.id_precision ?? 0) > 0 ? "partial" : "none";
 }
 const OUTCOMES = [
-  { key: "exact", name: "✓ Exact match", color: "var(--out-exact)" },
+  { key: "exact", name: "✓ Passed (exact match)", color: "var(--out-exact)" },
   { key: "partial", name: "◐ Partly right", color: "var(--out-partial)" },
   { key: "none", name: "○ Nothing right", color: "var(--out-none)" },
   { key: "error", name: "✕ Error or turn limit", color: "var(--critical)" },
@@ -408,7 +400,8 @@ function aggregate(cases) {
     n: cases.length,
     outcomes,
     success: { k: solved, rate: cases.length ? solved / cases.length : null, ...wilson(solved, cases.length) },
-    failureRate: cases.length ? cases.filter((c) => c.error).length / cases.length : null,
+    passed: solved,
+    failed: cases.length - solved,
     errors: cases.filter((c) => c.error).length,
     turnLimit: cases.filter((c) => c.turnLimitReached).length,
     metrics,
@@ -638,16 +631,18 @@ function render() {
     const t = tip(v.model, OUTCOMES.map((o) => [o.name, `${v.agg.outcomes[o.key]} of ${v.agg.n}`]));
     return {
       label: v.model,
-      valueText: `${v.agg.outcomes.exact} of ${v.agg.n} exact`,
+      valueText: `${v.agg.outcomes.exact} of ${v.agg.n} passed`,
       segments: OUTCOMES.map((o) => ({ value: v.agg.n ? v.agg.outcomes[o.key] / v.agg.n : 0, color: o.color, tip: t })),
     };
   }), { domainMax: 1, ticks: fmt.pct });
   $("outcomes-legend").innerHTML = outcomeLegend();
 
-  // Scores by metric: one small chart per metric.
+  // Scores by metric: one small chart per metric, highest score on top (models
+  // without the metric last, ties by name).
   $("metric-charts").innerHTML = metrics.map((m, i) => `<div class="card"><h3>${esc(label(m))}</h3><div class="chart" id="mc-${i}"></div></div>`).join("");
   metrics.forEach((m, i) => {
-    hbars($(`mc-${i}`), view.map((v) => ({
+    const ranked = [...view].sort((a, b) => (b.agg.metrics[m] ?? -1) - (a.agg.metrics[m] ?? -1) || a.model.localeCompare(b.model));
+    hbars($(`mc-${i}`), ranked.map((v) => ({
       label: v.model,
       valueText: v.agg.metrics[m] == null ? "– (test not run)" : fmt.score(v.agg.metrics[m]),
       segments: [{ value: v.agg.metrics[m] ?? 0, color: colorOf(v.model), tip: tip(v.model, [[label(m), fmt.score(v.agg.metrics[m])], ["Cases", v.agg.n]]) }],
@@ -667,18 +662,21 @@ function render() {
   renderCaseHeatmap(view, metric, metrics);
   renderGroupHeatmaps(view, metric);
 
+  // Effort and tokens: cost charts, lowest (cheapest) on top, ties by name.
+  const lowestFirst = (value) => [...view].sort((a, b) => value(a) - value(b) || a.model.localeCompare(b.model));
+
   // Effort.
-  ranges($("turns-range"), view.map((v) => ({
+  ranges($("turns-range"), lowestFirst((v) => v.agg.turns.mean).map((v) => ({
     label: v.model, color: colorOf(v.model), ...v.agg.turns,
     tip: tip(v.model, [["Mean", fmt.num(v.agg.turns.mean)], ["Min", v.agg.turns.min], ["Max", v.agg.turns.max], ["Hit turn limit", `${v.agg.turnLimit} of ${v.agg.n}`]]),
   })));
-  ranges($("seconds-range"), view.map((v) => ({
+  ranges($("seconds-range"), lowestFirst((v) => v.agg.seconds.mean).map((v) => ({
     label: v.model, color: colorOf(v.model), ...v.agg.seconds,
     tip: tip(v.model, [["Mean", fmt.num(v.agg.seconds.mean)], ["Min", fmt.num(v.agg.seconds.min)], ["Max", fmt.num(v.agg.seconds.max)]]),
   })));
 
   // Tokens.
-  hbars($("input-tokens"), view.map((v) => {
+  hbars($("input-tokens"), lowestFirst((v) => v.agg.agent.input).map((v) => {
     const { input, cached } = v.agg.agent;
     const share = input ? cached / input : 0;
     const t = tip(v.model, [["Input per case", fmt.tokens(input)], ["Cached", `${fmt.tokens(cached)} (${fmt.pct(share)})`], ["Not cached", fmt.tokens(input - cached)]]);
@@ -688,13 +686,13 @@ function render() {
     };
   }), { ticks: fmt.tokens });
   $("input-legend").innerHTML = `<span class="item"><span class="sw" style="background:var(--seq-lo)"></span>Read from cache</span><span class="item"><span class="sw" style="background:var(--seq-hi)"></span>Not cached</span>`;
-  hbars($("output-tokens"), view.map((v) => ({
+  hbars($("output-tokens"), lowestFirst((v) => v.agg.agent.output).map((v) => ({
     label: v.model, valueText: fmt.tokens(v.agg.agent.output),
     segments: [{ value: v.agg.agent.output, color: colorOf(v.model), tip: tip(v.model, [["Output per case", fmt.tokens(v.agg.agent.output)]]) }],
   })), { ticks: fmt.tokens });
 
   // Activity.
-  hbars($("db-queries"), view.map((v) => {
+  hbars($("db-queries"), lowestFirst((v) => v.agg.activity.dbQueries).map((v) => {
     const a = v.agg.activity;
     const t = tip(v.model, [["Queries per case", fmt.num(a.dbQueries)], ["Succeeded", fmt.num(a.dbQueriesSucceeded)], ["Failed", fmt.num(a.dbQueriesFailed)]]);
     return {
@@ -708,7 +706,6 @@ function render() {
     segments: [{ value: v.agg.activity.filesChecked, color: colorOf(v.model), tip: tip(v.model, [["Files per case", fmt.num(v.agg.activity.filesChecked)]]) }],
   })));
 
-  renderCases(view, metrics);
 }
 
 /** One card per model, ranked by the selected metric: score, outcome mix, every metric, and cost. */
@@ -734,10 +731,10 @@ function renderCards(view, metrics, metric) {
     ].join("");
     return `<div class="mcard">
       <div class="mhead"><span class="sw" style="background:${color}"></span><span class="mname" title="${esc(v.model)}">${esc(v.model)}</span>${levelGlyph(v.model)}<span class="rank">#${i + 1}</span></div>
-      <div class="hero"><span class="hv">${metric === "exact_match" ? fmt.pct(v.agg.success.rate) : fmt.score(score)}</span><span class="hk">${esc(label(metric ?? ""))} · ${v.agg.n} case${v.agg.n === 1 ? "" : "s"}${metric === "exact_match" ? `<br>95% CI ${fmt.pct(v.agg.success.lo)}–${fmt.pct(v.agg.success.hi)}` : ""}</span></div>
+      <div class="hero"><span class="hv">${metric === "exact_match" ? `${v.agg.passed}/${v.agg.n}` : fmt.score(score)}</span><span class="hk">${metric === "exact_match" ? `passed · ${v.agg.failed} failed<br>pass rate ${fmt.pct(v.agg.success.rate)} · 95% CI ${fmt.pct(v.agg.success.lo)}–${fmt.pct(v.agg.success.hi)}` : `${esc(label(metric ?? ""))} · ${v.agg.n} case${v.agg.n === 1 ? "" : "s"}`}</span></div>
       <div class="meter" tabindex="0" data-tip="${tip(v.model, [[label(metric ?? ""), fmt.score(score)]])}">${bar(score, color)}</div>
       <div class="ostrip">${strip}</div>
-      <div class="ocount">${v.agg.outcomes.exact} exact · ${v.agg.outcomes.partial} partly right · ${v.agg.outcomes.none} nothing right${v.agg.outcomes.error ? ` · ${v.agg.outcomes.error} errored` : ""}</div>
+      <div class="ocount">${v.agg.outcomes.exact} passed · ${v.agg.outcomes.partial} partly right · ${v.agg.outcomes.none} nothing right${v.agg.outcomes.error ? ` · ${v.agg.outcomes.error} errored` : ""}</div>
       <div class="mrows">${rows}</div>
       <div class="chips">${chips}</div>
     </div>`;
@@ -754,13 +751,13 @@ function ciMark(rate, lo, hi, color, w = 130) {
     `<circle cx="${x(rate)}" cy="8" r="4.5" fill="${color}" stroke="var(--surface)" stroke-width="2"/></svg>`;
 }
 
-/** Leaderboard-style headline: CI-aware rank, success rate with CI, F1, failure rate and cost per task. */
+/** Leaderboard-style headline: CI-aware rank, passed and failed cases, pass rate with CI, F1 and cost per task. */
 function renderHeadline(view) {
   const rows = view.filter((v) => v.agg.n > 0).map((v) => ({ v, s: v.agg.success, f1: v.agg.metrics.f1 }));
   for (const r of rows) r.rank = 1 + rows.filter((o) => o.s.lo > r.s.hi).length;
-  rows.sort((a, b) => a.rank - b.rank || (b.s.rate ?? 0) - (a.s.rate ?? 0) || (b.f1 ?? 0) - (a.f1 ?? 0) || a.v.model.localeCompare(b.v.model));
-  const head = ["Rank", "Model", "Success rate (95% CI)", "F1", "Failure rate", "Cases", "Tokens / task", "Seconds / task", "Turns / task"];
-  const num = new Set([0, 3, 4, 5, 6, 7, 8]);
+  rows.sort((a, b) => a.rank - b.rank || (b.s.rate ?? 0) - (a.s.rate ?? 0) || b.v.agg.passed - a.v.agg.passed || (b.f1 ?? 0) - (a.f1 ?? 0) || a.v.model.localeCompare(b.v.model));
+  const head = ["Rank", "Model", "Passed", "Failed", "Pass rate (95% CI)", "F1", "Tokens / task", "Seconds / task", "Turns / task"];
+  const num = new Set([0, 2, 3, 5, 6, 7, 8]);
   $("headline").innerHTML =
     `<thead><tr>${head.map((h, i) => `<th class="${num.has(i) ? "num" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>` +
     rows.map(({ v, s, f1, rank }) => {
@@ -769,13 +766,14 @@ function renderHeadline(view) {
       const rankTip = tip(`Rank ${rank}`, [], shared
         ? "Shared: the 95% intervals of these models overlap, so the data can't separate them."
         : `${rank - 1} model(s) are clearly better: their whole interval lies above this one.`);
-      const ciTip = tip(v.model, [["Success rate", fmt.pct(s.rate)], ["Solved", `${s.k} of ${v.agg.n}`], ["95% CI", `${fmt.pct(s.lo)} – ${fmt.pct(s.hi)}`]]);
+      const ciTip = tip(v.model, [["Pass rate", fmt.pct(s.rate)], ["Passed", `${s.k} of ${v.agg.n}`], ["95% CI", `${fmt.pct(s.lo)} – ${fmt.pct(s.hi)}`]]);
+      const failTip = tip(v.model, [["Failed", `${v.agg.failed} of ${v.agg.n}`], ["Wrong or partly right", v.agg.failed - v.agg.errors], ["Errors (API or turn limit)", v.agg.errors]]);
       return `<tr><td class="num" tabindex="0" data-tip="${rankTip}">${rank}${shared ? "=" : ""}</td>` +
         `<td>${modelTag(v.model)}</td>` +
+        `<td class="num"><b>${v.agg.passed}</b> / ${v.agg.n}</td>` +
+        `<td class="num" tabindex="0" data-tip="${failTip}">${v.agg.failed}${v.agg.errors ? ` <span class="flag err">✕ ${v.agg.errors} error${v.agg.errors === 1 ? "" : "s"}</span>` : ""}</td>` +
         `<td><div class="ci" tabindex="0" data-tip="${ciTip}">${ciMark(s.rate ?? 0, s.lo, s.hi, color)}<span class="cv">${fmt.pct(s.rate)}</span><span class="cr">${fmt.pct(s.lo)}–${fmt.pct(s.hi)}</span></div></td>` +
         `<td class="num">${fmt.score(f1)}</td>` +
-        `<td class="num">${v.agg.failureRate ? `<span class="flag err">✕ ${fmt.pct(v.agg.failureRate)}</span>` : "0%"}</td>` +
-        `<td class="num">${v.agg.n}</td>` +
         `<td class="num">${fmt.tokens(v.agg.agent.input + v.agg.agent.output)}</td>` +
         `<td class="num">${fmt.num(v.agg.seconds.mean)}</td>` +
         `<td class="num">${fmt.num(v.agg.turns.mean)}</td></tr>`;
@@ -788,7 +786,7 @@ function renderTiles(view) {
   const tiles = [
     ["Models compared", view.length, `${models.length} with results`],
     ["Cases per model", view.length ? Math.max(...view.map((v) => v.agg.n)) : 0, selectedTests().join(", ")],
-    ["Top success rate", best ? fmt.pct(best.agg.success.rate) : "–", best ? `${best.model} · 95% CI ${fmt.pct(best.agg.success.lo)}–${fmt.pct(best.agg.success.hi)}` : ""],
+    ["Most cases passed", best ? `${best.agg.passed} / ${best.agg.n}` : "–", best ? `${best.model} · pass rate ${fmt.pct(best.agg.success.rate)}, 95% CI ${fmt.pct(best.agg.success.lo)}–${fmt.pct(best.agg.success.hi)}` : ""],
     ["Last updated", fmt.date(latest), latest ? "Central European Time" : ""],
   ];
   $("tiles").innerHTML = tiles.map(([k, v, d]) => `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="d">${esc(d)}</div></div>`).join("");
@@ -881,25 +879,6 @@ function renderGroupHeatmaps(view, metric) {
   group($("tag-heatmap"), (c) => c.tags ?? []);
 }
 
-function renderCases(view, metrics) {
-  const all = view.flatMap((v) => v.cases).sort((a, b) => `${a.test}/${a.caseId}/${a.model}`.localeCompare(`${b.test}/${b.caseId}/${b.model}`));
-  const head = ["Test", "Case", "Model", "Difficulty", ...metrics.map(label), "Turns", "Seconds", "Input tokens", "Cached", "Output tokens", "DB queries", "Files", "Status", "Tags", "Updated"];
-  // Metric columns plus turns through files are numeric.
-  const isNum = (i) => i >= 4 && i < 4 + metrics.length + 7;
-  $("cases").innerHTML =
-    `<thead><tr>${head.map((h, i) => `<th class="${isNum(i) ? "num" : ""}">${esc(h)}</th>`).join("")}</tr></thead><tbody>` +
-    all.map((c) => {
-      const u = usageOf(c.usage);
-      const status = [c.error ? `<span class="flag err">✕ Error: ${esc(c.error)}</span>` : "", c.turnLimitReached ? `<span class="flag limit">⏱ Turn limit</span>` : ""].filter(Boolean).join(" ") || "OK";
-      return `<tr><td>${esc(c.test)}</td><td>${esc(c.caseId)}</td><td>${modelTag(c.model)}</td><td>${esc(c.difficulty ?? "–")}</td>` +
-        metrics.map((m) => `<td class="num">${fmt.score(c.metrics?.[m])}</td>`).join("") +
-        `<td class="num">${c.turns ?? "–"}</td><td class="num">${fmt.num(c.seconds)}</td><td class="num">${fmt.tokens(u.inputTokens)}</td><td class="num">${u.inputTokens ? fmt.pct(u.cachedInputTokens / u.inputTokens) : "–"}</td><td class="num">${fmt.tokens(u.outputTokens)}</td>` +
-        `<td class="num">${c.activity?.dbQueries ?? "–"}${c.activity?.dbQueriesFailed ? ` (${c.activity.dbQueriesFailed} failed)` : ""}</td><td class="num">${c.activity?.filesChecked ?? "–"}</td>` +
-        `<td>${status}</td><td class="wrap">${(c.tags ?? []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</td>` +
-        `<td>${esc(fmt.date(c.updatedAt))}</td></tr>`;
-    }).join("") + `</tbody>`;
-}
-
 // ---------- tooltip ----------
 const tipEl = $("tip");
 function showTip(target, x, y) {
@@ -937,9 +916,8 @@ function start(loaded, source) {
   }
   const tests = allTests();
   $("test").innerHTML = `<option value="__all">All tests (models may cover different tests)</option>` + tests.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
-  // Start on the test the most models have run, so the first view compares like with like.
-  const coverage = (t) => new Set(runs.filter((r) => testsWithCases(r.summary).some((x) => x.test === t)).map((r) => modelOf(r.summary))).size;
-  state.test = [...tests].sort((a, b) => coverage(b) - coverage(a) || a.localeCompare(b))[0] ?? "__all";
+  // Start on every test together; the selector narrows to one.
+  state.test = "__all";
   $("test").value = state.test;
   $("source").textContent = `${models.length} models from ${source}. Times are Central European Time.`;
   $("picker").hidden = true;

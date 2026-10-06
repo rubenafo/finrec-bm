@@ -52,6 +52,13 @@ describe("loadResults", () => {
     assert.deepEqual(models[0]!.model, { spec: "anthropic:claude-opus-5", provider: "anthropic", modelId: "claude-opus-5" });
   });
 
+  it("takes difficulty and tags from the case's meta.json today, not from the saved result", () => {
+    const meta = JSON.parse(readFileSync(join(benchmarkDir, "csv-matching", "data", "case-0003", "meta.json"), "utf8"));
+    const result = loadResults(resultsDir, benchmarkDir)[1]!.tests[0]!.results[0]!;
+    assert.equal(result.caseId, "case-0003");
+    assert.deepEqual([result.difficulty, result.tags], [meta.difficulty, meta.tags], "the saved file says easy, with no tags");
+  });
+
   it("returns nothing when there is no results folder", () => {
     assert.deepEqual(loadResults(join(dir, "missing"), benchmarkDir), []);
   });

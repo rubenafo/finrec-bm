@@ -8,7 +8,7 @@ function caseResult(caseId: string, overrides: Partial<CaseResult>): CaseResult 
     test: "txt-matching",
     caseId,
     difficulty: "easy",
-    tags: ["multi-transaction-sum"],
+    tags: ["files-only"],
     model: "deepseek:deepseek-flash",
     metrics: { exact_match: 1, id_recall: 1 },
     answer: { transaction_ids: ["TRX-1"] },
@@ -58,9 +58,11 @@ describe("buildModelSummary", () => {
     assert.equal(summary.updatedAt, "2026-10-02T06:55:00+00:00");
   });
 
-  it("aggregates each test: metrics, turns, activity and usage", () => {
+  it("aggregates each test: passed and failed cases, metrics, turns, activity and usage", () => {
     const test = summary.tests[0]!;
     assert.equal(test.cases, 2);
+    assert.equal(test.passed, 1, "case-0001 is an exact match");
+    assert.equal(test.failed, 1, "case-0002 hit the turn limit");
     assert.equal(test.errors, 1);
     assert.deepEqual(test.metrics, { exact_match: 0.5, id_recall: 0.75 });
     assert.deepEqual(test.turns, { total: 16, mean: 8, min: 5, max: 11 });
@@ -77,8 +79,9 @@ describe("buildModelSummary", () => {
     assert.deepEqual(first, {
       caseId: "case-0001",
       difficulty: "easy",
-      tags: ["multi-transaction-sum"],
+      tags: ["files-only"],
       metrics: { exact_match: 1, id_recall: 1 },
+      passed: true,
       turns: 5,
       turnLimitReached: false,
       seconds: 7.5,
@@ -88,6 +91,7 @@ describe("buildModelSummary", () => {
       error: null,
     });
     assert.equal(second!.difficulty, "hard");
+    assert.equal(second!.passed, false);
     assert.equal(second!.error, "stopped after 11 turns without an answer");
   });
 
@@ -97,6 +101,8 @@ describe("buildModelSummary", () => {
     assert.deepEqual(summary.totals, {
       tests: 2,
       cases: 2,
+      passed: 1,
+      failed: 1,
       errors: 1,
       turns: 16,
       seconds: 23,
@@ -129,6 +135,8 @@ describe("buildResultsSummary", () => {
     assert.deepEqual(combined.totals, {
       models: 2,
       cases: 4,
+      passed: 2,
+      failed: 2,
       errors: 2,
       turns: 32,
       seconds: 46,

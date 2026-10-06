@@ -63,7 +63,7 @@ describe("runTest", () => {
     assert.equal(result.turns, 3);
     assert.deepEqual(result.activity, { filesChecked: 1, dbQueries: 1, dbQueriesSucceeded: 1, dbQueriesFailed: 0 });
     assert.equal(result.difficulty, "easy", "difficulty and tags come from meta.json");
-    assert.ok(result.tags.includes("multi-transaction-sum"));
+    assert.ok(result.tags.includes("files-only"));
     assert.ok(!existsSync(join(outDir, "summary.json")), "summary.json is rebuilt by the caller, not per test");
     assert.match(result.finishedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+0[12]:00$/);
 
@@ -104,7 +104,7 @@ describe("runTest", () => {
     assert.equal(lines[0], `starting txt-matching (${cases.length} cases) ...`);
     cases.forEach((caseId, i) => {
       assert.equal(lines[1 + 2 * i], `starting txt-matching/${caseId} ...`);
-      assert.match(lines[2 + 2 * i]!, new RegExp(`^ended txt-matching/${caseId} - ${secs}: id_precision=`));
+      assert.match(lines[2 + 2 * i]!, new RegExp(`^ended txt-matching/${caseId} - ${secs}: (PASSED|FAILED)  id_precision=`));
     });
     assert.match(lines.at(-1)!, new RegExp(`^ended txt-matching - ${secs}$`));
   });
