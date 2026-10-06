@@ -123,9 +123,6 @@ export interface ModelSpec {
   modelId: string;
 }
 
-/** Used when neither `--model` nor FINREC_MODEL is given. */
-export const DEFAULT_MODEL = "anthropic:claude-opus-5";
-
 /**
  * Parses `<provider>:<model id>` and checks the provider supports the model.
  * DeepSeek models are named on their own (`ds-flash-reasoning-high`); a
@@ -161,12 +158,33 @@ export function knownModelSpecs(): string[] {
 }
 
 /**
- * Named groups of models for `--model`: `ds-flash` is every
- * ds-flash-reasoning-* model, `ds-v4pro` (or `ds-v4p`) every ds-v4p-reasoning-* one.
+ * Every listed model whose provider has its API key set: what runs when
+ * neither `--model` nor FINREC_MODEL is given. Providers that list no models
+ * (Bedrock, OpenAI, Google) are left out, since they need a model ID.
+ */
+export function availableModelSpecs(env: NodeJS.ProcessEnv = process.env): string[] {
+  return Object.values(modelProviders)
+    .filter((p) => p.apiKeyEnv === undefined || p.apiKey(env) !== undefined)
+    .flatMap((p) => (p.models ?? []).map((modelId) => formatModelSpec({ provider: p.name, modelId })));
+}
+
+/**
+ * Named groups of models for `--model`: `ds-flash` (or `dp-flash`) is every
+ * ds-flash-reasoning-* model, `ds-v4pro` (or `ds-v4p`, `dp-v4pro`, `dp-v4p`)
+ * every ds-v4p-reasoning-* one.
  */
 export const modelFamilies: Readonly<Record<string, string[]>> = (() => {
   const family = (prefix: string) => Object.keys(deepseekModels).filter((m) => m.startsWith(`${prefix}-`));
-  return { "ds-flash": family("ds-flash"), "ds-v4pro": family("ds-v4p"), "ds-v4p": family("ds-v4p") };
+  const flash = family("ds-flash");
+  const v4pro = family("ds-v4p");
+  return {
+    "ds-flash": flash,
+    "ds-v4pro": v4pro,
+    "ds-v4p": v4pro,
+    "dp-flash": flash,
+    "dp-v4pro": v4pro,
+    "dp-v4p": v4pro,
+  };
 })();
 
 /**

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { loadEnv } from "../src/common/env.js";
-import { DEFAULT_MODEL, createModel, formatModelSpec, knownModelSpecs, modelProviders, parseModelSpec, providers, resolveModelList, resolveModels } from "../src/common/model.js";
+import { availableModelSpecs, createModel, deepseekModels, formatModelSpec, knownModelSpecs, modelProviders, parseModelSpec, providers, resolveModelList, resolveModels } from "../src/common/model.js";
 import { matchNames } from "../src/common/pattern.js";
 
 const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "AWS_REGION"];
@@ -25,10 +25,19 @@ describe("model specs", () => {
   });
 
   it("parses provider and model ID, keeping colons in the ID", () => {
-    assert.deepEqual(parseModelSpec(DEFAULT_MODEL), { provider: "anthropic", modelId: "claude-opus-5" });
+    assert.deepEqual(parseModelSpec("anthropic:claude-opus-5"), { provider: "anthropic", modelId: "claude-opus-5" });
     assert.deepEqual(parseModelSpec("bedrock:vendor.model-v1:0"), { provider: "bedrock", modelId: "vendor.model-v1:0" });
     assert.deepEqual(parseModelSpec("ds-v4p-reasoning-max"), { provider: "deepseek", modelId: "ds-v4p-reasoning-max" });
     assert.deepEqual(parseModelSpec("deepseek:ds-v4p-reasoning-max"), { provider: "deepseek", modelId: "ds-v4p-reasoning-max" });
+  });
+
+  it("defaults to every listed model whose API key is set", () => {
+    assert.deepEqual(availableModelSpecs({}), []);
+    assert.deepEqual(availableModelSpecs({ DEEPSEEK_API_KEY: "k", OPENAI_API_KEY: "k" }), Object.keys(deepseekModels));
+    const both = availableModelSpecs({ ANTHROPIC_API_KEY: "k", DEEPSEEK_API_KEY: "k" });
+    assert.deepEqual(both, knownModelSpecs());
+    assert.ok(both.includes("anthropic:claude-opus-5") && both.includes("ds-flash-reasoning-off"));
+    assert.deepEqual(availableModelSpecs({ ANTHROPIC_API_KEY: "", DEEPSEEK_API_KEY: "k" }).length, 8, "blank keys are unset");
   });
 
   it("formats DeepSeek models without the provider prefix", () => {
@@ -68,6 +77,13 @@ describe("model selection", () => {
     assert.deepEqual(ids("ds-v4p"), v4pro);
   });
 
+  it("selects the same families under their dp- names: dp-flash, dp-v4pro and dp-v4p", () => {
+    assert.deepEqual(ids("dp-flash"), ids("ds-flash"));
+    assert.deepEqual(ids("dp-flash").length, 4);
+    assert.deepEqual(ids("dp-v4p"), ids("ds-v4p"));
+    assert.deepEqual(ids("DP-V4PRO"), ids("ds-v4p"));
+  });
+
   it("takes a comma-separated list of families, names and patterns, each model once", () => {
     const list = (value: string) => resolveModelList(value).map(formatModelSpec);
     assert.deepEqual(list("ds-flash, ds-v4pro").length, 8);
@@ -89,12 +105,12 @@ describe("model selection", () => {
 });
 
 describe("matchNames", () => {
-  const tests = ["txt-csv-matching", "txt-matching"];
+  const tests = ["csv-matching", "txt-matching"];
 
   it("prefers an exact name, else matches a case-insensitive regex", () => {
     assert.deepEqual(matchNames("txt-matching", tests), ["txt-matching"]);
-    assert.deepEqual(matchNames("TXT", tests), tests);
-    assert.deepEqual(matchNames("csv", tests), ["txt-csv-matching"]);
+    assert.deepEqual(matchNames("MATCHING", tests), tests);
+    assert.deepEqual(matchNames("csv", tests), ["csv-matching"]);
     assert.deepEqual(matchNames("pdf", tests), []);
   });
 });

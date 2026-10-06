@@ -51,7 +51,35 @@ after(() => {
 });
 
 const run = (name: string, input: Record<string, unknown>) => tools[name]!.run(input, ctx);
-const query = async (sql: string) => JSON.parse(await run("query_ledger", { sql }));
+
+/** Splits one CSV line into fields, unquoting "..." fields. */
+function splitCsv(line: string): string[] {
+  const fields: string[] = [];
+  let field = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (quoted && ch === '"' && line[i + 1] === '"') {
+      field += '"';
+      i++;
+    } else if (ch === '"') quoted = !quoted;
+    else if (ch === "," && !quoted) {
+      fields.push(field);
+      field = "";
+    } else field += ch;
+  }
+  fields.push(field);
+  return fields;
+}
+
+/** Parses one query_ledger result: CSV rows as objects, plus its closing row-count line. */
+function parseResult(text: string): { rows: Record<string, string>[]; footer: string } {
+  const lines = text.split("\n");
+  const footer = lines.pop()!;
+  const [header, ...rows] = lines.map(splitCsv);
+  return { rows: rows.map((r) => Object.fromEntries(header!.map((h, i) => [h, r[i]!]))), footer };
+}
+const query = async (sql: string) => parseResult(await run("query_ledger", { queries: [sql] }));
 
 describe("openTestDb", () => {
   it("builds the database from db.sql, resolving files against the test folder", async () => {
@@ -81,14 +109,54 @@ describe("openTestDb", () => {
 
 describe("query_ledger", () => {
   it("supports schema exploration", async () => {
-    assert.deepEqual((await query("SHOW TABLES")).rows.map((r: { name: string }) => r.name).sort(), ["accounts", "ledger"]);
+    assert.deepEqual((await query("SHOW TABLES")).rows.map((r) => r.name).sort(), ["accounts", "ledger"]);
     assert.ok((await query("DESCRIBE ledger")).rows.length === 2);
   });
 
-  it("caps large results", async () => {
+  it("returns CSV with a header row and a row count", async () => {
+    assert.equal(
+      await run("query_ledger", { queries: ["SELECT * FROM ledger ORDER BY entry_id"] }),
+      "entry_id,amount\nL-001,100.00\nL-002,-3.50\n(2 rows)",
+    );
+    assert.equal((await query("SELECT 1 AS n")).footer, "(1 row)");
+    assert.equal(await run("query_ledger", { queries: ["SELECT 1 AS n WHERE false"] }), "n\n(0 rows)");
+  });
+
+  it("quotes fields with commas, quotes or line breaks, and leaves NULL empty", async () => {
+    const text = await run("query_ledger", { queries: [`SELECT 'a,b' AS x, 'say "hi"' AS y, NULL AS z, 'two' || chr(10) || 'lines' AS w`] });
+    assert.equal(text, 'x,y,z,w\n"a,b","say ""hi""",,"two\nlines"\n(1 row)');
+  });
+
+  it("keeps columns that share a name", async () => {
+    // The wrapping subquery makes DuckDB rename the second one.
+    assert.equal(await run("query_ledger", { queries: ["SELECT 1 AS id, 2 AS id"] }), "id,id_1\n1,2\n(1 row)");
+  });
+
+  it("caps large results at 100 rows and says so", async () => {
     const result = await query("SELECT * FROM range(1000)");
-    assert.equal(result.rows.length, 200);
-    assert.equal(result.truncated, true);
+    assert.equal(result.rows.length, 100);
+    assert.match(result.footer, /^\(first 100 rows shown; more exist/);
+    assert.equal((await query("SELECT * FROM range(100)")).footer, "(100 rows)");
+  });
+
+  it("runs a batch of queries, reporting failures in place", async () => {
+    const text = await run("query_ledger", {
+      queries: ["SELECT count(*)::INTEGER AS n FROM ledger", "SELECT nope FROM ledger", "DELETE FROM ledger", "SELECT code FROM accounts"],
+    });
+    const parts = text.split("\n\n");
+    assert.equal(parts.length, 4);
+    assert.equal(parts[0], "-- query 1: SELECT count(*)::INTEGER AS n FROM ledger\nn\n2\n(1 row)");
+    assert.match(parts[1]!, /^-- query 2 failed: .*nope/);
+    assert.match(parts[2]!, /^-- query 3 failed: /);
+    assert.equal(parts[3], "-- query 4: SELECT code FROM accounts\ncode\n1000\n(1 row)");
+    assert.equal((await query("SELECT count(*)::INTEGER AS n FROM ledger")).rows[0]!.n, "2", "the failed DELETE changed nothing");
+  });
+
+  it("fails a batch only when every query fails, or when the input is invalid", async () => {
+    await assert.rejects(run("query_ledger", { queries: ["SELECT nope", "DROP TABLE ledger"] }), /every item failed:\n-- query 1 failed: .*\n-- query 2 failed: /);
+    for (const queries of [[], "SELECT 1", [""], [1], Array(11).fill("SELECT 1")]) {
+      await assert.rejects(run("query_ledger", { queries }), ToolError, JSON.stringify(queries));
+    }
   });
 
   it("rejects writes, extra statements and file access, leaving the data intact", async () => {
@@ -100,28 +168,42 @@ describe("query_ledger", () => {
       `SELECT * FROM read_text('${forwardSlashes(join(caseDir, "expected.json"))}')`,
       "SELECT * FROM read_csv('ledger.csv')",
     ]) {
-      await assert.rejects(run("query_ledger", { sql }), ToolError, sql);
+      await assert.rejects(run("query_ledger", { queries: [sql] }), ToolError, sql);
     }
     await assert.rejects(ctx.db.run("SET enable_external_access = true"));
-    assert.equal((await query("SELECT count(*)::INTEGER AS n FROM ledger")).rows[0].n, 2);
-    assert.equal((await query("SELECT count(*)::INTEGER AS n FROM accounts")).rows[0].n, 1);
+    assert.equal((await query("SELECT count(*)::INTEGER AS n FROM ledger")).rows[0]!.n, "2");
+    assert.equal((await query("SELECT count(*)::INTEGER AS n FROM accounts")).rows[0]!.n, "1");
   });
 
   it("reports SQL errors as tool errors", async () => {
-    await assert.rejects(run("query_ledger", { sql: "SELECT nope FROM ledger" }), ToolError);
+    await assert.rejects(run("query_ledger", { queries: ["SELECT nope FROM ledger"] }), /nope/);
   });
 });
 
 describe("read_text_file", () => {
   it("reads a file in the case's evidence folder", async () => {
     for (const path of ["bank_statement.csv", "evidence/bank_statement.csv", "./evidence/bank_statement.csv"]) {
-      assert.equal(await run("read_text_file", { path }), "id,amount\nB-001,100.00\n", path);
+      assert.equal(await run("read_text_file", { paths: [path] }), "id,amount\nB-001,100.00\n", path);
     }
+  });
+
+  it("reads several files in one call, reporting a failed one in place", async () => {
+    assert.equal(
+      await run("read_text_file", { paths: ["evidence/bank_statement.csv", "../expected.json", "emails/remittance.msg", "bank_statement.csv"] }),
+      [
+        "=== evidence/bank_statement.csv\nid,amount\nB-001,100.00",
+        '=== ../expected.json failed: "../expected.json" is outside the case\'s evidence folder',
+        "=== emails/remittance.msg failed: file is an Outlook email: read it with read_msg_file",
+        "=== bank_statement.csv\nid,amount\nB-001,100.00",
+      ].join("\n\n"),
+    );
+    await assert.rejects(run("read_text_file", { paths: ["missing.txt", "../expected.json"] }), /every item failed/);
+    await assert.rejects(run("read_text_file", { paths: [] }), ToolError);
   });
 
   it("rejects paths outside the evidence folder", async () => {
     for (const path of ["../expected.json", join(caseDir, "expected.json"), "../../../db.sql", "evidence/../expected.json", "evidence/../../../db.sql", "missing.txt", "."]) {
-      await assert.rejects(run("read_text_file", { path }), ToolError, path);
+      await assert.rejects(run("read_text_file", { paths: [path] }), ToolError, path);
     }
   });
 });
@@ -145,7 +227,7 @@ describe("read_msg_file", () => {
   });
 
   it("is the tool read_text_file points to for .msg files", async () => {
-    await assert.rejects(run("read_text_file", { path: "emails/remittance.msg" }), /read it with read_msg_file/);
+    await assert.rejects(run("read_text_file", { paths: ["emails/remittance.msg"] }), /read it with read_msg_file/);
   });
 
   it("reports unparseable .msg files as tool errors", async () => {

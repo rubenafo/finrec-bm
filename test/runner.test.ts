@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
+import { limiter } from "../src/common/limit.js";
 import { activityOf, parseAnswer, runTest, type CaseResult } from "../src/runner.js";
 import { openTestDb } from "../src/test-db.js";
 import { ScriptedModel } from "./helpers/scripted-model.js";
@@ -32,8 +34,8 @@ describe("parseAnswer", () => {
 describe("runTest", () => {
   it("runs the agent on every case, scores it and writes the results", async () => {
     const model = new ScriptedModel([
-      { tool: "read_text_file", input: { path: "evidence/trans.txt" } },
-      { tool: "query_ledger", input: { sql: "SHOW TABLES" } },
+      { tool: "read_text_file", input: { paths: ["evidence/trans.txt"] } },
+      { tool: "query_ledger", input: { queries: ["SHOW TABLES"] } },
       { text: "```json\n" + JSON.stringify(answer) + "\n```" },
     ]);
     const outDir = join(outRoot, "ok");
@@ -72,7 +74,7 @@ describe("runTest", () => {
   });
 
   it("scores a run that hits the turn limit 0 and records the error", async () => {
-    const model = new ScriptedModel([{ tool: "query_ledger", input: { sql: "SELECT 1" } }]);
+    const model = new ScriptedModel([{ tool: "query_ledger", input: { queries: ["SELECT 1"] } }]);
     const run = await runTest({
       testDir: join(benchmarkDir, "txt-matching"),
       model,
@@ -116,9 +118,9 @@ describe("runTest", () => {
     seeded.close();
 
     const model = new ScriptedModel([
-      { tool: "query_ledger", input: { sql: "SELECT setseed(0.42)" } },
+      { tool: "query_ledger", input: { queries: ["SELECT setseed(0.42)"] } },
       { text: "[]" },
-      { tool: "query_ledger", input: { sql: "SELECT random() AS r" } },
+      { tool: "query_ledger", input: { queries: ["SELECT random() AS r"] } },
       { text: "[]" },
     ]);
     const run = await runTest({
@@ -141,8 +143,33 @@ describe("runTest", () => {
 
     // The draw in case-0002 is the last message of its next model call: a tool result.
     const drawResult = JSON.stringify(model.received[3]!.at(-1));
-    assert.match(drawResult, /\\"r\\":\d/, "case-0002's query returned a number");
+    assert.match(drawResult, /r\\n0\.\d/, "case-0002's query returned a number");
     assert.ok(!drawResult.includes(seededDraw), "case-0002's database was not seeded by case-0001");
+  });
+
+  it("runs cases of several tests at once through a shared limiter, each with its own model", async () => {
+    const limit = limiter(2);
+    let running = 0;
+    let most = 0;
+    let built = 0;
+    // The factory runs inside each case's slot: count how many overlap.
+    const model = async () => {
+      built++;
+      most = Math.max(most, ++running);
+      await sleep(20);
+      running--;
+      return new ScriptedModel([{ text: "[]" }]);
+    };
+    const runs = await Promise.all(
+      ["txt-matching", "csv-matching"].map((test) =>
+        runTest({ testDir: join(benchmarkDir, test), model, modelSpec: "scripted:model", outDir: join(outRoot, "concurrent", test), limit, log: quiet }),
+      ),
+    );
+    const cases = (test: string) => readdirSync(join(benchmarkDir, test, "data")).sort();
+    assert.equal(most, 2, "never more cases at once than the limit, and more than one");
+    assert.equal(built, cases("txt-matching").length + cases("csv-matching").length, "a fresh model per case");
+    assert.deepEqual(runs.map((r) => r.results.map((c) => c.caseId)), [cases("txt-matching"), cases("csv-matching")], "results in case order");
+    assert.ok(runs.every((r) => r.results.every((c) => c.error === undefined)));
   });
 
   it("skips tests without cases", async () => {
@@ -181,6 +208,18 @@ describe("runTest with cases", () => {
 });
 
 describe("activityOf", () => {
+  it("counts each item of batched calls, leaving out files and queries that failed in place", () => {
+    assert.deepEqual(
+      activityOf([
+        { name: "read_text_file", input: { paths: ["evidence/trans.txt", "../secret.txt", "./Trans.txt", "fx.txt"] }, failedItems: [2] },
+        { name: "read_text_file", input: { paths: ["a.txt", "b.txt"] }, error: "every item failed" }, // nothing opened
+        { name: "query_ledger", input: { queries: ["SHOW TABLES", "SELECT nope", "SELECT 1"] }, failedItems: [2] },
+        { name: "query_ledger", input: { queries: ["SELECT x", "SELECT y"] }, error: "every item failed" }, // two queries run
+      ]),
+      { filesChecked: 2, dbQueries: 5, dbQueriesSucceeded: 2, dbQueriesFailed: 3 },
+    );
+  });
+
   it("counts distinct files opened successfully, and database queries split into succeeded and failed", () => {
     assert.deepEqual(
       activityOf([

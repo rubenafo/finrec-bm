@@ -32,7 +32,7 @@ describe("modelFolder", () => {
 describe("loadResults", () => {
   const resultsDir = join(dir, "load");
   writeCase(resultsDir, "ds-flash-reasoning-low", "txt-matching", "case-0001", "ds-flash-reasoning-low");
-  writeCase(resultsDir, "ds-flash-reasoning-low", "txt-csv-matching", "case-0003", "ds-flash-reasoning-low");
+  writeCase(resultsDir, "ds-flash-reasoning-low", "csv-matching", "case-0003", "ds-flash-reasoning-low");
   writeCase(resultsDir, "anthropic_claude-opus-5", "txt-matching", "case-0002", "anthropic:claude-opus-5");
   // Ignored: an old timestamped run folder, a case and a test that no longer exist, a damaged file.
   writeCase(resultsDir, "2026-10-02_08-03-18_CEST_ds-flash-reasoning-low", "txt-matching", "case-0001", "ds-flash-reasoning-low");
@@ -46,7 +46,7 @@ describe("loadResults", () => {
       models.map((m) => [m.model.spec, m.tests.map((t) => [t.test, t.results.map((r) => r.caseId)])]),
       [
         ["anthropic:claude-opus-5", [["txt-matching", ["case-0002"]]]],
-        ["ds-flash-reasoning-low", [["txt-csv-matching", ["case-0003"]], ["txt-matching", ["case-0001"]]]],
+        ["ds-flash-reasoning-low", [["csv-matching", ["case-0003"]], ["txt-matching", ["case-0001"]]]],
       ],
     );
     assert.deepEqual(models[0]!.model, { spec: "anthropic:claude-opus-5", provider: "anthropic", modelId: "claude-opus-5" });

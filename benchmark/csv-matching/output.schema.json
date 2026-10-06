@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "txt-csv-matching output",
+  "title": "csv-matching output",
   "description": "One finding per record that is evidence for a reported value: every transaction, master-data row, rate or minutes item the value rests on; empty if there is none.",
   "type": "array",
   "items": {

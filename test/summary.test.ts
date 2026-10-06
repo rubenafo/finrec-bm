@@ -42,7 +42,7 @@ const summary = buildModelSummary({ spec: "deepseek:deepseek-flash", provider: "
         }),
       ],
     },
-    { test: "txt-csv-matching", results: [] },
+    { test: "csv-matching", results: [] },
 ]);
 
 describe("isoInCet", () => {
