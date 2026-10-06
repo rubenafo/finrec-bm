@@ -16,7 +16,7 @@ import { buildModelSummary } from "./summary.js";
 
 loadEnv();
 
-const DEFAULT_CONCURRENCY = 10;
+const DEFAULT_CONCURRENCY = 15;
 
 const usage = `usage: npm run benchmark [--model=<models>] [--test=<tests>] [--case=<cases>] [--concurrency=<n>]
        npm run benchmark -- [--model <models>] [--test <tests>] [--case <cases>] [--concurrency <n>]
