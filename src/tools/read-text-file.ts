@@ -33,7 +33,10 @@ export const readTextFile: Tool = {
       }
       const content = readFileSync(file);
       if (content.includes(0)) {
-        throw new ToolError(file.toLowerCase().endsWith(".msg") ? "file is an Outlook email: read it with read_msg_file" : "file is not plain text");
+        const lower = file.toLowerCase();
+        if (lower.endsWith(".msg")) throw new ToolError("file is an Outlook email: read it with read_msg_file");
+        if (lower.endsWith(".xls")) throw new ToolError("file is an Excel workbook: read it with read_xls_file");
+        throw new ToolError("file is not plain text");
       }
       return content.toString("utf8");
     };

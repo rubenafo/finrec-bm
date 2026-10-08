@@ -74,6 +74,14 @@ describe("calculate", () => {
     assert.deepEqual(results.map((r) => [r.name, r.value]), [["pos", "53840.75"], ["liab", "51315.70"], [undefined, "2525.05"]]);
   });
 
+  it("reads hexadecimal integers, in either case, exactly and alongside decimals", async () => {
+    assert.equal(await value("0x5D62"), "23906");
+    assert.equal(await value("0x5d62 + 0X4530"), "41618");
+    assert.equal(await value("0xFF * 1.50"), "382.5");
+    assert.equal(await value("-0x10 + 0.25"), "-15.75");
+    assert.equal(await value("0x1FFFFFFFFFFFFF + 2"), "9007199254740993", "past 2^53, still exact");
+  });
+
   it("refuses thousands separators instead of reading them as arguments", async () => {
     await assert.rejects(tools.calculate!.run({ expressions: ["sum(1,111,250.00)"] }, ctx), /thousands separator/);
     await assert.rejects(tools.calculate!.run({ expressions: ["1,250.00 + 1"] }, ctx), /thousands separator/);
@@ -96,6 +104,9 @@ describe("calculate", () => {
     await fails(["sum = 1"], /function name/);
     await fails(["min()"], /at least one argument/);
     await fails(["1e99"], /out of range/);
+    await fails(["0x"], /expected an operator, found "x"/);
+    await fails(["0x1G"], /expected an operator, found "G"/);
+    await fails(["0x5D62.5"], /expected an operator, found "\.5"/);
     await fails([], /non-empty list/);
     await fails("1 + 1", /non-empty list/);
     await fails([" "], /non-empty list/);
@@ -151,6 +162,13 @@ describe("calculate covers the arithmetic of every case", () => {
       "txt-matching case-0002: monthly EUR/USD rates",
       ["round(1284600.00 * 1.1612 + 642310.55 + 2105480.30 * 1.1734 + 2650000.00 * 1.1689 + 318940.20, 2)"],
       "8021083.85",
+    ],
+    ["xls-matching case-0001: Fabrikam Industrial in Q2", ["sum(8240.00, 15600.00, 9875.25, 22740.25)"], "56455.50"],
+    ["xls-matching case-0002: two hexadecimal figures", ["0x5D62 + 0x4530"], "41618"],
+    [
+      "xls-matching case-0003: the ledger's eight August payments, not the sheet's nine rows",
+      ["sum(3420.00, 1275.90, 12600.00, 4812.60, 8940.00, 15300.00, 2189.50, 10599.80)"],
+      "59137.80",
     ],
   ];
   for (const [title, expressions, expected] of cases) {

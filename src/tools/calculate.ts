@@ -29,8 +29,9 @@ class Fraction {
     this.shownPlaces = shownPlaces;
   }
 
-  /** Parses a plain decimal such as 1234.50, .5 or 1.2e6. */
+  /** Parses a plain decimal such as 1234.50, .5 or 1.2e6, or a hexadecimal integer such as 0x5D62. */
   static parse(text: string): Fraction {
+    if (/^0x/i.test(text)) return new Fraction(BigInt(`0x${text.slice(2)}`));
     const [, int = "", frac = "", exp = "0"] = text.match(/^(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/)!;
     if (Math.abs(Number(exp)) > 30) throw new ToolError(`exponent of ${text} is out of range (-30 to 30)`);
     const shift = BigInt(exp) - BigInt(frac.length);
@@ -100,7 +101,7 @@ function tokenize(source: string): Token[] {
     );
   }
   const tokens: Token[] = [];
-  const pattern = /\s+|(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)|([A-Za-z_]\w*)|([-+*/(),=%])/y;
+  const pattern = /\s+|(0[xX][0-9A-Fa-f]+|\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)|([A-Za-z_]\w*)|([-+*/(),=%])/y;
   while (pattern.lastIndex < source.length) {
     const at = pattern.lastIndex;
     const m = pattern.exec(source);
@@ -217,7 +218,7 @@ export const calculate: Tool = {
   name: "calculate",
   description:
     "Evaluate arithmetic exactly, with no floating-point error. Use it for arithmetic outside the database (amounts from files or documents, combining query results) and for every division and rounding; sums and products of database amounts can be done exactly in SQL. " +
-    "Each expression may use numbers (1250.00, -20700, 1.2e6), + - * /, parentheses, a postfix % (21% is 0.21) and the functions " +
+    "Each expression may use numbers (1250.00, -20700, 1.2e6, and hexadecimal integers such as 0x5D62), + - * /, parentheses, a postfix % (21% is 0.21) and the functions " +
     "sum(a, b, ...), round(x, places) (halves away from zero; places 2 for cents, -3 for thousands, default 0), abs(x), min(...) and max(...). " +
     "Write numbers without thousands separators. An expression can name its result, as `net = 28053.85 / (1 + 21%)`, " +
     "and later expressions in the same call can use that name. Results are exact decimals; a result with no finite decimal form " +
