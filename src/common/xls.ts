@@ -1,8 +1,8 @@
 // Reads Excel 97-2003 .xls workbooks (BIFF8, MS-XLS): every sheet's cell
 // values, with dates recognised from their number format and each cell's
 // fill colour. Handles what Excel itself writes: shared strings split across
-// CONTINUE records, RK and MULRK numbers, formulas with cached results, a
-// custom palette and custom number formats.
+// CONTINUE records, RK and MULRK numbers, formulas with cached results and
+// their text, a custom palette and custom number formats.
 
 import CFB from "cfb";
 
@@ -16,6 +16,8 @@ export interface XlsCellData {
   value: XlsValue;
   /** Solid or patterned fill colour as #RRGGBB; undefined when the cell has no fill. */
   fill?: string;
+  /** A formula cell's formula as Excel shows it, without the leading =, e.g. SUM(F4:F8); `value` is its cached result. Undefined for other cells, and for formulas this reader can't decode. */
+  formula?: string;
 }
 
 export interface XlsSheetData {
@@ -159,6 +161,97 @@ function rk(value: number): number {
   return value & 1 ? n / 100 : n;
 }
 
+/** Names of the built-in functions a formula may call (MS-XLS 2.5.198.17 Ftab), with the argument count of the fixed ones. */
+const FUNCTIONS: Record<number, { name: string; args?: number }> = {
+  0: { name: "COUNT" }, 1: { name: "IF" }, 4: { name: "SUM" }, 5: { name: "AVERAGE" }, 6: { name: "MIN" }, 7: { name: "MAX" },
+  24: { name: "ABS", args: 1 }, 27: { name: "ROUND", args: 2 }, 169: { name: "COUNTA" }, 345: { name: "SUMIF" }, 482: { name: "SUMIFS" },
+};
+const BINARY: Record<number, string> = { 0x03: "+", 0x04: "-", 0x05: "*", 0x06: "/", 0x07: "^", 0x08: "&", 0x09: "<", 0x0a: "<=", 0x0b: "=", 0x0c: ">=", 0x0d: ">", 0x0e: "<>" };
+
+/** A cell reference from a BIFF8 row and column field (MS-XLS 2.5.198.88), with $ on the absolute parts. */
+function refText(row: number, colField: number): string {
+  return `${colField & 0x4000 ? "" : "$"}${columnName(colField & 0x3fff)}${colField & 0x8000 ? "" : "$"}${row + 1}`;
+}
+
+/**
+ * A formula's text from its parsed tokens (rgce, MS-XLS 2.5.198), for the
+ * tokens of ordinary cell formulas: numbers, strings, operators, references
+ * and ranges on the same sheet, and common functions. Undefined for anything
+ * else, such as shared formulas or references to other sheets.
+ */
+export function formulaText(rgce: Buffer): string | undefined {
+  const stack: string[] = [];
+  const pop = (n: number) => (stack.length < n ? undefined : stack.splice(stack.length - n, n));
+  for (let at = 0; at < rgce.length; ) {
+    const ptg = rgce[at++]!;
+    const base = ptg >= 0x20 ? (ptg & 0x1f) | 0x20 : ptg; // the class bits (reference, value, array) don't change the text
+    if (BINARY[ptg]) {
+      const args = pop(2);
+      if (!args) return undefined;
+      stack.push(`${args[0]}${BINARY[ptg]}${args[1]}`);
+      continue;
+    }
+    switch (base) {
+      case 0x12: case 0x13: case 0x14: { // unary +, unary -, percent
+        const [arg] = pop(1) ?? [];
+        if (arg === undefined) return undefined;
+        stack.push(ptg === 0x14 ? `${arg}%` : `${ptg === 0x12 ? "+" : "-"}${arg}`);
+        break;
+      }
+      case 0x15: { // parentheses
+        const [arg] = pop(1) ?? [];
+        if (arg === undefined) return undefined;
+        stack.push(`(${arg})`);
+        break;
+      }
+      case 0x16: stack.push(""); break; // missing argument
+      case 0x17: { // string
+        const count = rgce[at]!, wide = rgce[at + 1]! & 1;
+        const text = wide ? rgce.toString("utf16le", at + 2, at + 2 + 2 * count) : rgce.toString("latin1", at + 2, at + 2 + count);
+        at += 2 + (wide ? 2 : 1) * count;
+        stack.push(`"${text.replaceAll('"', '""')}"`);
+        break;
+      }
+      case 0x19: { // attribute: SUM of one argument; the others only affect calculation or spacing
+        const flags = rgce[at]!;
+        if (flags & 0x04) at += 3 + 2 * (rgce.readUInt16LE(at + 1) + 1); // CHOOSE jump table
+        else at += 3;
+        if (flags & 0x10) {
+          const [arg] = pop(1) ?? [];
+          if (arg === undefined) return undefined;
+          stack.push(`SUM(${arg})`);
+        }
+        break;
+      }
+      case 0x1c: stack.push(ERRORS[rgce[at]!] ?? "#ERROR"); at += 1; break; // error
+      case 0x1d: stack.push(rgce[at] ? "TRUE" : "FALSE"); at += 1; break; // boolean
+      case 0x1e: stack.push(String(rgce.readUInt16LE(at))); at += 2; break; // integer
+      case 0x1f: stack.push(String(rgce.readDoubleLE(at))); at += 8; break; // number
+      case 0x21: case 0x22: { // function, fixed or variable argument count
+        const fixed = base === 0x21;
+        const count = fixed ? undefined : rgce[at]!;
+        const id = rgce.readUInt16LE(fixed ? at : at + 1) & 0x7fff;
+        at += fixed ? 2 : 3;
+        const fn = FUNCTIONS[id];
+        const n = count ?? fn?.args;
+        if (!fn || n === undefined) return undefined;
+        const args = pop(n);
+        if (!args) return undefined;
+        stack.push(`${fn.name}(${args.join(",")})`);
+        break;
+      }
+      case 0x24: stack.push(refText(rgce.readUInt16LE(at), rgce.readUInt16LE(at + 2))); at += 4; break; // reference
+      case 0x25: // range
+        stack.push(`${refText(rgce.readUInt16LE(at), rgce.readUInt16LE(at + 4))}:${refText(rgce.readUInt16LE(at + 2), rgce.readUInt16LE(at + 6))}`);
+        at += 8;
+        break;
+      default:
+        return undefined;
+    }
+  }
+  return stack.length === 1 ? stack[0] : undefined;
+}
+
 /** Whether a custom number format shows a date: it has d or y outside quotes, escapes and brackets. */
 function isDateFormat(format: string): boolean {
   const bare = format.replace(/"[^"]*"/g, "").replace(/\\./g, "").replace(/\[[^\]]*\]/g, "");
@@ -245,9 +338,9 @@ export function readXls(file: Buffer): XlsSheetData[] {
 
   return sheets.map(({ name, offset }) => {
     const cells = new Map<string, XlsCellData>();
-    const put = (row: number, col: number, ixfe: number, value: XlsValue) => {
+    const put = (row: number, col: number, ixfe: number, value: XlsValue, formula?: string) => {
       const fill = colour(xfs[ixfe]?.fill);
-      cells.set(`${row}:${col}`, { row: row + 1, column: columnName(col), value, ...(fill && { fill }) });
+      cells.set(`${row}:${col}`, { row: row + 1, column: columnName(col), value, ...(fill && { fill }), ...(formula !== undefined && { formula }) });
     };
     const records = readRecords(stream, offset, true);
     for (const [i, { type, data, continues }] of records.entries()) {
@@ -281,16 +374,17 @@ export function readXls(file: Buffer): XlsSheetData[] {
           put(row(), col(), ixfe(), data[7] ? { type: "error", value: ERRORS[data[6]!] ?? "#ERROR" } : { type: "bool", value: data[6] === 1 });
           break;
         case 0x0006: {
-          // FORMULA: its cached result; a string result follows in a STRING record.
+          // FORMULA: its cached result, then the parsed formula; a string result follows in a STRING record.
+          const formula = data.length >= 22 ? formulaText(data.subarray(22, 22 + data.readUInt16LE(20))) : undefined;
           if (data.readUInt16LE(12) !== 0xffff) {
-            put(row(), col(), ixfe(), numberValue(data.readDoubleLE(6), ixfe()));
+            put(row(), col(), ixfe(), numberValue(data.readDoubleLE(6), ixfe()), formula);
           } else if (data[6] === 0) {
             const next = records[i + 1];
-            if (next?.type === 0x0207) put(row(), col(), ixfe(), { type: "text", value: new Segments([next.data, ...next.continues]).plainString() });
+            if (next?.type === 0x0207) put(row(), col(), ixfe(), { type: "text", value: new Segments([next.data, ...next.continues]).plainString() }, formula);
           } else if (data[6] === 1) {
-            put(row(), col(), ixfe(), { type: "bool", value: data[8] === 1 });
+            put(row(), col(), ixfe(), { type: "bool", value: data[8] === 1 }, formula);
           } else if (data[6] === 2) {
-            put(row(), col(), ixfe(), { type: "error", value: ERRORS[data[8]!] ?? "#ERROR" });
+            put(row(), col(), ixfe(), { type: "error", value: ERRORS[data[8]!] ?? "#ERROR" }, formula);
           }
           break;
         }

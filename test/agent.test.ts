@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { DuckDBInstance } from "@duckdb/node-api";
-import { runAgent } from "../src/common/agent.js";
+import { runAgent, toUsage } from "../src/common/agent.js";
 import { tools, type CaseContext } from "../src/tools/index.js";
 import { ScriptedModel } from "./helpers/scripted-model.js";
 
@@ -58,7 +58,14 @@ describe("runAgent", () => {
         ["read_text_file", false, undefined],
       ],
     );
-    assert.deepEqual(run.usage, { inputTokens: 40, outputTokens: 20, cachedInputTokens: 24 });
+    assert.deepEqual(run.usage, { inputTokens: 40, outputTokens: 20, cachedInputTokens: 24, cacheWriteInputTokens: 0 });
+  });
+
+  it("counts cached tokens as part of the input, adding them back for providers that report them apart", () => {
+    const usage = { inputTokens: 100, outputTokens: 20, totalTokens: 120, cacheReadInputTokens: 800, cacheWriteInputTokens: 50 };
+    assert.deepEqual(toUsage(usage, true), { inputTokens: 950, outputTokens: 20, cachedInputTokens: 800, cacheWriteInputTokens: 50 });
+    assert.deepEqual(toUsage(usage, false), { inputTokens: 100, outputTokens: 20, cachedInputTokens: 800, cacheWriteInputTokens: 50 });
+    assert.deepEqual(toUsage(undefined, true), { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0 });
   });
 
   it("stops at maxTurns", async () => {

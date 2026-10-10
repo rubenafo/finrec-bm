@@ -71,7 +71,9 @@ describe("buildModelSummary", () => {
       total: { filesChecked: 3, dbQueries: 8, dbQueriesSucceeded: 6, dbQueriesFailed: 2 },
       perCase: { filesChecked: 1.5, dbQueries: 4, dbQueriesSucceeded: 3, dbQueriesFailed: 1 },
     });
-    assert.deepEqual(test.usage, { inputTokens: 28000, outputTokens: 2800, cachedInputTokens: 0 });
+    assert.deepEqual(test.usage, { inputTokens: 28000, outputTokens: 2800, cachedInputTokens: 0, cacheWriteInputTokens: 0 });
+    // deepseek-flash: case-0001 finished off-peak (05:51 UTC), case-0002 at peak (06:55 UTC, a Friday).
+    assert.equal(test.costUsd, 0.01008);
   });
 
   it("keeps one row per case with everything a dashboard needs", () => {
@@ -87,6 +89,7 @@ describe("buildModelSummary", () => {
       seconds: 7.5,
       activity: { filesChecked: 1, dbQueries: 2, dbQueriesSucceeded: 2, dbQueriesFailed: 0 },
       usage: { inputTokens: 8000, outputTokens: 800, cachedInputTokens: 0 },
+      costUsd: 0.00168,
       updatedAt: "2026-10-02T07:51:20+02:00",
       error: null,
     });
@@ -107,7 +110,8 @@ describe("buildModelSummary", () => {
       turns: 16,
       seconds: 23,
       activity: { filesChecked: 3, dbQueries: 8, dbQueriesSucceeded: 6, dbQueriesFailed: 2 },
-      usage: { inputTokens: 28000, outputTokens: 2800, cachedInputTokens: 0 },
+      usage: { inputTokens: 28000, outputTokens: 2800, cachedInputTokens: 0, cacheWriteInputTokens: 0 },
+      costUsd: 0.01008,
     });
   });
 
@@ -141,7 +145,8 @@ describe("buildResultsSummary", () => {
       turns: 32,
       seconds: 46,
       activity: { filesChecked: 6, dbQueries: 16, dbQueriesSucceeded: 12, dbQueriesFailed: 4 },
-      usage: { inputTokens: 56000, outputTokens: 5600, cachedInputTokens: 0 },
+      usage: { inputTokens: 56000, outputTokens: 5600, cachedInputTokens: 0, cacheWriteInputTokens: 0 },
+      costUsd: 0.02016,
     });
   });
 });

@@ -1,6 +1,7 @@
-import { Agent, BeforeModelCallEvent, tool, type BaseModelConfig, type Model } from "@strands-agents/sdk";
+import { Agent, BeforeModelCallEvent, tool, type BaseModelConfig, type Model, type Usage as StrandsUsage } from "@strands-agents/sdk";
 import type { CaseContext, Tool } from "../tools/index.js";
 import { createModel, type ModelSpec } from "./model.js";
+import { reportsCacheApart } from "./model-provider.js";
 import type { Usage } from "../summary.js";
 
 /** Model calls allowed per case before the run is stopped and scored as invalid. */
@@ -64,6 +65,22 @@ export interface AgentRun {
 }
 
 /**
+ * Converts Strands usage to the benchmark's, where cached tokens are part of
+ * the input tokens. Providers whose input count leaves out cache reads and
+ * writes (`excludesCache`, e.g. Anthropic) have them added back.
+ */
+export function toUsage(usage: StrandsUsage | undefined, excludesCache: boolean): Usage {
+  const cached = usage?.cacheReadInputTokens ?? 0;
+  const written = usage?.cacheWriteInputTokens ?? 0;
+  return {
+    inputTokens: (usage?.inputTokens ?? 0) + (excludesCache ? cached + written : 0),
+    outputTokens: usage?.outputTokens ?? 0,
+    cachedInputTokens: cached,
+    cacheWriteInputTokens: written,
+  };
+}
+
+/**
  * Runs the benchmark agent on one case: a Strands agent with the given model,
  * system prompt and tools, invoked once with `prompt`.
  */
@@ -72,6 +89,8 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRun> {
     typeof options.model === "string" || !("stream" in options.model)
       ? await createModel(options.model as string | ModelSpec)
       : options.model;
+  // Set when the model was built by a provider whose input tokens leave out the cached ones.
+  const excludesCache = reportsCacheApart(model);
 
   const toolCalls: ToolCallRecord[] = [];
   const strandsTools = options.tools.map((t) =>
@@ -123,10 +142,6 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRun> {
     turns,
     turnLimitReached,
     toolCalls,
-    usage: {
-      inputTokens: usage?.inputTokens ?? 0,
-      outputTokens: usage?.outputTokens ?? 0,
-      cachedInputTokens: usage?.cacheReadInputTokens ?? 0,
-    },
+    usage: toUsage(usage, excludesCache),
   };
 }

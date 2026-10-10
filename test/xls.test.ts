@@ -64,6 +64,19 @@ describe("xls writer and reader", () => {
     assert.throws(() => buildXls({ sheets: [{ name: "s", rows: [[{ date: "14/05/2025" }]] }] }), /invalid date/);
     assert.throws(() => buildXls({ sheets: [{ name: "a/b", rows: [] }] }), /invalid sheet name/);
     assert.throws(() => buildXls({ sheets: [] }), /at least one sheet/);
+    assert.throws(() => buildXls({ sheets: [{ name: "s", rows: [[{ formula: "SUM(A2:A3)" }]] }] }), /s!A1: a formula needs its calculated result/);
+    assert.throws(() => buildXls({ sheets: [{ name: "s", rows: [[{ formula: "AVERAGE(A2:A3)", number: 1 }]] }] }), /unsupported formula/);
+    assert.throws(() => buildXls({ sheets: [{ name: "s", rows: [[{ formula: "SUM(A2:A3", number: 1 }]] }] }), /unsupported formula/);
+  });
+
+  it("round-trips formulas: the calculated result as the value, and the formula as Excel shows it", () => {
+    const formulas = ["SUM(A1:A2)", "SUM(A1:A2,B1:B2,C1)", "A1+B1-0.25", "SUM(A1:A2)-B2+3"];
+    const [sheet] = readXls(buildXls({ sheets: [{ name: "s", rows: [[1, 2], [3, 4], formulas.map((formula, i) => ({ formula, number: i, format: "amount", fill: "yellow" }))] }] }));
+    assert.deepEqual(
+      sheet!.cells.filter((c) => c.row === 3).map((c) => [c.column, c.value.value, c.formula, c.fill]),
+      formulas.map((f, i) => [String.fromCharCode(65 + i), i, f, "#FFFF00"]),
+    );
+    assert.equal(sheet!.cells.find((c) => c.row === 1)!.formula, undefined, "plain cells have no formula");
   });
 
   it("reads Excel's own .xls: shared strings across CONTINUE records, RK numbers, formulas, datetimes, fills", () => {
@@ -77,6 +90,7 @@ describe("xls writer and reader", () => {
     assert.deepEqual(at("C1")?.value, { type: "number", value: 225375 });
     assert.deepEqual(at("C2")?.value, { type: "text", value: "tot 225375" });
     assert.deepEqual(at("C3")?.value, { type: "error", value: "#DIV/0!" });
+    assert.deepEqual(["C1", "C2", "C3"].map((a) => at(a)?.formula), ["SUM(B1:B600)", '"tot "&C1', "1/0"]);
     assert.deepEqual(at("C4")?.value, { type: "date", value: "2025-05-14 12:00:00" });
     assert.equal(at("C5")?.fill, "#FFFF00");
     assert.equal(at("C6")?.fill, "#FFCC99");
@@ -129,6 +143,14 @@ describe("read_xls_file", () => {
   it("reads Excel's own files", async () => {
     const text = await run("read_xls_file", { path: "big.xls" });
     assert.match(text, /^row 5: A5="row 5 éééééx{20}" \| B5=6\.25 \| C5=3 \[fill #FFFF00\]$/m);
+  });
+
+  it("shows a formula after its calculated value, before the fill", async () => {
+    const text = await run("read_xls_file", { path: "big.xls" });
+    assert.match(text, /^row 1: A1="row 1 éx{20}" \| B1=1\.25 \| C1=225375 \[formula =SUM\(B1:B600\)\]$/m);
+    assert.match(text, /\| C2="tot 225375" \[formula ="tot "&C1\]$/m);
+    writeFileSync(join(evidenceDir, "total.xls"), buildXls({ sheets: [{ name: "s", rows: [[1], [2], [{ formula: "SUM(A1:A2)", number: 3, fill: "yellow" }]] }] }));
+    assert.match(await run("read_xls_file", { path: "total.xls" }), /^row 3: A3=3 \[formula =SUM\(A1:A2\)\] \[fill #FFFF00\]$/m);
   });
 
   it("rejects other files, unreadable workbooks and paths outside the evidence folder", async () => {

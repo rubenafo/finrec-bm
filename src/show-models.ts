@@ -17,13 +17,12 @@ for (const provider of Object.values(modelProviders)) {
     : "AWS credential chain";
   console.log(`${provider.label} (${provider.name})  [${key}]`);
 
+  for (const modelId of provider.listed) {
+    const spec = formatModelSpec({ provider: provider.name, modelId });
+    console.log(`  ${spec}${defaults.has(spec) ? "  (default)" : ""}`);
+  }
   if (provider.models === undefined) {
     console.log(`  any model ID: --model ${provider.name}:<model id>`);
-  } else {
-    for (const modelId of provider.models) {
-      const spec = formatModelSpec({ provider: provider.name, modelId });
-      console.log(`  ${spec}${defaults.has(spec) ? "  (default)" : ""}`);
-    }
   }
   console.log();
 }

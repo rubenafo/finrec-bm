@@ -7,11 +7,11 @@ import { requireString, ToolError, type Tool } from "./types.js";
 const MAX_BYTES = 5_000_000;
 const MAX_CELLS = 5_000;
 
-/** A cell as `F8=12480 [fill #FFFF00]`: text in JSON quotes, numbers as stored, dates as ISO. */
+/** A cell as `F8=12480 [fill #FFFF00]`: text in JSON quotes, numbers as stored, dates as ISO, a formula as `[formula =SUM(F4:F7)]` after its value. */
 function formatCell(cell: XlsCellData): string {
   const { value } = cell;
   const shown = value.type === "text" ? JSON.stringify(value.value) : value.type === "date" ? `date ${value.value}` : String(value.value);
-  return `${cell.column}${cell.row}=${shown}${cell.fill ? ` [fill ${cell.fill}]` : ""}`;
+  return `${cell.column}${cell.row}=${shown}${cell.formula !== undefined ? ` [formula =${cell.formula}]` : ""}${cell.fill ? ` [fill ${cell.fill}]` : ""}`;
 }
 
 export const readXlsFile: Tool = {
@@ -19,8 +19,8 @@ export const readXlsFile: Tool = {
   description:
     "Read an Excel 97-2003 .xls workbook for this case. Returns every sheet's non-empty cells, one line per row, " +
     "each cell as <column><row>=<value>: text in double quotes, numbers as stored (without display formatting), " +
-    "dates as \"date yyyy-mm-dd\", formulas as their last calculated value. A cell with a background fill shows it " +
-    "as [fill #RRGGBB]; cells without one have no fill.",
+    "dates as \"date yyyy-mm-dd\". A formula cell shows its last calculated value followed by the formula, as " +
+    "[formula =SUM(F4:F7)]. A cell with a background fill shows it as [fill #RRGGBB]; cells without one have no fill.",
   inputSchema: {
     type: "object",
     properties: {

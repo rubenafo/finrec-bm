@@ -1,9 +1,28 @@
+import { randomUUID } from "node:crypto";
 import type { BaseModelConfig, Model } from "@strands-agents/sdk";
 import { deepseekFetch } from "./deepseek-fetch.js";
 import { ModelProvider, type BuildOptions } from "./model-provider.js";
 import { matchNames } from "./pattern.js";
 
 // Provider modules are imported on demand so only the chosen SDK is loaded.
+
+/** Anthropic effort levels, sent as the Messages API's `output_config.effort`. */
+type AnthropicEffort = "low" | "medium" | "high" | "max";
+
+/**
+ * Named Anthropic models as `at-<model>-<effort>`, each an API model plus an
+ * effort level: "haiku" is claude-haiku-5-5, "sonnet" is claude-sonnet-5-5.
+ */
+export const anthropicModels: Readonly<Record<string, { apiModel: string; effort: AnthropicEffort }>> = Object.fromEntries(
+  (
+    [
+      ["haiku", "claude-haiku-5-5"],
+      ["sonnet", "claude-sonnet-5-5"],
+    ] as const
+  ).flatMap(([short, apiModel]) =>
+    (["low", "medium", "high", "max"] as const).map((effort) => [`at-${short}-${effort}`, { apiModel, effort }]),
+  ),
+);
 
 const anthropic = new ModelProvider({
   name: "anthropic",
@@ -19,12 +38,25 @@ const anthropic = new ModelProvider({
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
+    ...Object.keys(anthropicModels),
   ],
   apiKeyEnv: "ANTHROPIC_API_KEY",
   requiresApiKey: true,
+  inputTokensExcludeCache: true,
   async create(modelId, { apiKey, maxTokens }) {
     const { AnthropicModel } = await import("@strands-agents/sdk/models/anthropic");
-    return new AnthropicModel({ modelId, maxTokens, apiKey: apiKey! });
+    // Prompt caching: cache points on the tools, the system prompt and the last
+    // user message, so each turn reads the conversation so far from the cache.
+    const cacheConfig = { strategy: "auto" } as const;
+    const named = anthropicModels[modelId];
+    if (named === undefined) return new AnthropicModel({ modelId, maxTokens, apiKey: apiKey!, cacheConfig });
+    return new AnthropicModel({
+      modelId: named.apiModel,
+      maxTokens,
+      apiKey: apiKey!,
+      cacheConfig,
+      params: { output_config: { effort: named.effort } },
+    });
   },
 });
 
@@ -39,14 +71,46 @@ const bedrock = new ModelProvider({
   },
 });
 
+/** OpenAI reasoning efforts, sent as the Responses API's `reasoning.effort`. */
+type OpenAIReasoning = "none" | "low" | "medium" | "high" | "xhigh";
+
+/**
+ * Named OpenAI models as `oa-<model>-reasoning-<level>`, each an API model
+ * plus a reasoning effort: "luna" is gpt-6-luna, "sol" is gpt-6.1-sol.
+ */
+export const openaiModels: Readonly<Record<string, { apiModel: string; reasoning: OpenAIReasoning }>> = Object.fromEntries(
+  (
+    [
+      ["luna", "gpt-6-luna", ["none", "low", "medium", "high", "xhigh"]],
+      ["sol", "gpt-6.1-sol", ["low", "medium", "high", "xhigh"]],
+    ] as const
+  ).flatMap(([short, apiModel, levels]) =>
+    levels.map((reasoning) => [`oa-${short}-reasoning-${reasoning}`, { apiModel, reasoning }]),
+  ),
+);
+
 const openai = new ModelProvider({
   name: "openai",
   label: "OpenAI",
+  // Any model ID works as openai:<id>; the named oa-* models are listed for selection.
+  listedModels: Object.keys(openaiModels),
   apiKeyEnv: "OPENAI_API_KEY",
   requiresApiKey: true,
   async create(modelId, { apiKey, maxTokens }) {
     const { OpenAIModel } = await import("@strands-agents/sdk/models/openai");
-    return new OpenAIModel({ modelId, maxTokens, apiKey: apiKey! });
+    // OpenAI caches prompt prefixes automatically. A prompt_cache_key per model
+    // instance, so per case, keeps each conversation's requests on one cache
+    // instead of spreading concurrent cases that share the same opening prefix.
+    const cacheConfig = { cacheKey: `finrec-${randomUUID()}` };
+    const named = openaiModels[modelId];
+    if (named === undefined) return new OpenAIModel({ modelId, maxTokens, apiKey: apiKey!, cacheConfig });
+    return new OpenAIModel({
+      modelId: named.apiModel,
+      maxTokens,
+      apiKey: apiKey!,
+      cacheConfig,
+      params: { reasoning: { effort: named.reasoning } },
+    });
   },
 });
 
@@ -90,7 +154,8 @@ const deepseek = new ModelProvider({
   apiKeyEnv: "DEEPSEEK_API_KEY",
   requiresApiKey: true,
   defaultMaxTokens: 8_192,
-  // DeepSeek serves an OpenAI-compatible Chat Completions API.
+  // DeepSeek serves an OpenAI-compatible Chat Completions API. It caches
+  // repeated prompt prefixes automatically; there is no setting for it.
   async create(modelId, { apiKey, maxTokens }) {
     const { OpenAIModel } = await import("@strands-agents/sdk/models/openai");
     const { apiModel, reasoning } = deepseekModels[modelId]!;
@@ -125,18 +190,21 @@ export interface ModelSpec {
 
 /**
  * Parses `<provider>:<model id>` and checks the provider supports the model.
- * DeepSeek models are named on their own (`ds-flash-reasoning-high`); a
- * `deepseek:` prefix is accepted too. Only the first colon separates provider
+ * DeepSeek and named OpenAI and Anthropic models go by their name alone
+ * (`ds-flash-reasoning-high`, `oa-luna-reasoning-xhigh`, `at-sonnet-high`); a
+ * `deepseek:`, `openai:` or `anthropic:` prefix is accepted too. Only the first colon separates provider
  * and ID, so Bedrock IDs that contain colons (`...-v1:0`) work as-is.
  */
 export function parseModelSpec(spec: string): ModelSpec {
   if (spec.trim() in deepseekModels) return { provider: deepseek.name, modelId: spec.trim() };
+  if (spec.trim() in openaiModels) return { provider: openai.name, modelId: spec.trim() };
+  if (spec.trim() in anthropicModels) return { provider: anthropic.name, modelId: spec.trim() };
   const sep = spec.indexOf(":");
   const provider = modelProviders[spec.slice(0, sep)];
   const modelId = spec.slice(sep + 1).trim();
   if (sep <= 0 || modelId === "" || provider === undefined) {
     throw new Error(
-      `invalid model "${spec}": expected <provider>:<model id> with provider one of ${providers.join(", ")}, or a DeepSeek model such as ds-flash-reasoning-high`,
+      `invalid model "${spec}": expected <provider>:<model id> with provider one of ${providers.join(", ")}, or a named model such as ds-flash-reasoning-high, oa-luna-reasoning-high or at-sonnet-high`,
     );
   }
   if (!provider.supports(modelId)) {
@@ -145,27 +213,33 @@ export function parseModelSpec(spec: string): ModelSpec {
   return { provider: provider.name, modelId };
 }
 
-/** `<provider>:<model id>`, or just the name for DeepSeek models. */
+/** `<provider>:<model id>`, or just the name for DeepSeek and named OpenAI and Anthropic models. */
 export function formatModelSpec({ provider, modelId }: ModelSpec): string {
-  return provider === deepseek.name ? modelId : `${provider}:${modelId}`;
+  const named =
+    provider === deepseek.name ||
+    (provider === openai.name && modelId in openaiModels) ||
+    (provider === anthropic.name && modelId in anthropicModels);
+  return named ? modelId : `${provider}:${modelId}`;
 }
 
-/** Every listed model as a spec, e.g. `anthropic:claude-opus-5`, `ds-flash-reasoning-high`. Bedrock, OpenAI and Google list none. */
+/**
+ * Every listed model as a spec, e.g. `anthropic:claude-opus-5`,
+ * `ds-flash-reasoning-high`, `oa-sol-reasoning-low`. Bedrock and Google list
+ * none; OpenAI lists its named models.
+ */
 export function knownModelSpecs(): string[] {
-  return Object.values(modelProviders).flatMap((p) =>
-    (p.models ?? []).map((modelId) => formatModelSpec({ provider: p.name, modelId })),
-  );
+  return Object.values(modelProviders).flatMap((p) => p.listed.map((modelId) => formatModelSpec({ provider: p.name, modelId })));
 }
 
 /**
  * Every listed model whose provider has its API key set: what runs when
  * neither `--model` nor FINREC_MODEL is given. Providers that list no models
- * (Bedrock, OpenAI, Google) are left out, since they need a model ID.
+ * (Bedrock, Google) are left out, since they need a model ID.
  */
 export function availableModelSpecs(env: NodeJS.ProcessEnv = process.env): string[] {
   return Object.values(modelProviders)
     .filter((p) => hasApiKey({ provider: p.name, modelId: "" }, env))
-    .flatMap((p) => (p.models ?? []).map((modelId) => formatModelSpec({ provider: p.name, modelId })));
+    .flatMap((p) => p.listed.map((modelId) => formatModelSpec({ provider: p.name, modelId })));
 }
 
 /** Whether a model's provider has the API key it needs (Bedrock uses the AWS credential chain, so always does). */
@@ -177,10 +251,12 @@ export function hasApiKey({ provider }: ModelSpec, env: NodeJS.ProcessEnv = proc
 /**
  * Named groups of models for `--model`: `ds-flash` (or `dp-flash`) is every
  * ds-flash-reasoning-* model, `ds-v4pro` (or `ds-v4p`, `dp-v4pro`, `dp-v4p`)
- * every ds-v4p-reasoning-* one.
+ * every ds-v4p-reasoning-* one, `oa-luna` every oa-luna-reasoning-* one,
+ * `oa-sol` every oa-sol-reasoning-* one, `at-haiku` every at-haiku-* one and
+ * `at-sonnet` every at-sonnet-* one.
  */
 export const modelFamilies: Readonly<Record<string, string[]>> = (() => {
-  const family = (prefix: string) => Object.keys(deepseekModels).filter((m) => m.startsWith(`${prefix}-`));
+  const family = (prefix: string) => [...Object.keys(deepseekModels), ...Object.keys(openaiModels), ...Object.keys(anthropicModels)].filter((m) => m.startsWith(`${prefix}-`));
   const flash = family("ds-flash");
   const v4pro = family("ds-v4p");
   return {
@@ -190,6 +266,10 @@ export const modelFamilies: Readonly<Record<string, string[]>> = (() => {
     "dp-flash": flash,
     "dp-v4pro": v4pro,
     "dp-v4p": v4pro,
+    "oa-luna": family("oa-luna"),
+    "oa-sol": family("oa-sol"),
+    "at-haiku": family("at-haiku"),
+    "at-sonnet": family("at-sonnet"),
   };
 })();
 

@@ -2,23 +2,25 @@
 // a Compound File Binary container holding one Workbook stream. Covers what
 // case spreadsheets need: several sheets, text, numbers and dates, the
 // "#,##0.00" amount format, solid cell fills from the default palette, a bold
-// font and column widths. No formulas: totals are stored as values.
+// font, column widths, and simple formulas (numbers, cell references, + and -,
+// SUM over cells and ranges) stored with their calculated result.
 
 import CFB from "cfb";
 
-/** A solid cell fill, by its colour in Excel's default palette: yellow #FFFF00, grey #C0C0C0, tan #FFCC99. */
-export type XlsFill = "yellow" | "grey" | "tan";
+/** A solid cell fill, by its colour in Excel's default palette: yellow #FFFF00, grey #C0C0C0, tan #FFCC99, green #CCFFCC. */
+export type XlsFill = "yellow" | "grey" | "tan" | "green";
 
 /**
  * One cell: a string or number as is, or an object for a date (ISO
- * yyyy-mm-dd), an amount shown as #,##0.00, a fill or bold text. null leaves
- * the cell empty.
+ * yyyy-mm-dd), an amount shown as #,##0.00, a fill or bold text. A formula,
+ * such as "SUM(F4:F8)" (no leading =), needs `number`: its calculated result,
+ * which the file stores as Excel does. null leaves the cell empty.
  */
 export type XlsCell =
   | null
   | string
   | number
-  | { text?: string; number?: number; date?: string; format?: "amount"; fill?: XlsFill; bold?: boolean };
+  | { text?: string; number?: number; date?: string; formula?: string; format?: "amount"; fill?: XlsFill; bold?: boolean };
 
 export interface XlsSheet {
   name: string;
@@ -34,7 +36,7 @@ export interface XlsSource {
 }
 
 /** Indices in the default BIFF8 palette (MS-XLS 2.5.161). */
-const PALETTE_INDEX: Record<XlsFill, number> = { yellow: 0x0d, grey: 0x16, tan: 0x2f };
+const PALETTE_INDEX: Record<XlsFill, number> = { yellow: 0x0d, grey: 0x16, tan: 0x2f, green: 0x2a };
 /** Built-in number format 4 is "#,##0.00"; custom formats start at 164. */
 const FMT_AMOUNT = 4;
 const FMT_DATE = 164;
@@ -109,6 +111,58 @@ const columnName = (col: number) => {
   return name;
 };
 
+/** A cell reference as BIFF8 stores it (MS-XLS 2.5.198.88 RgceLoc): row, then column with both relative flags set, as Excel writes A1. */
+function cellRef(ref: string, where: string): Buffer {
+  const m = ref.match(/^([A-Z]{1,3})([1-9]\d*)$/);
+  if (!m) throw new Error(`${where}: invalid cell reference "${ref}"`);
+  const col = [...m[1]!].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+  return u16(Number(m[2]) - 1, col | 0xc000);
+}
+
+/**
+ * Parses a formula into BIFF8 tokens (rgce, MS-XLS 2.5.198), in reverse Polish
+ * order: numbers, cell references, + and -, and SUM over cells and ranges.
+ */
+function parseFormula(formula: string, where: string): Buffer {
+  const tokens = formula.replace(/\s+/g, "").match(/SUM\(|[A-Z]{1,3}\d+:[A-Z]{1,3}\d+|[A-Z]{1,3}\d+|\d+(?:\.\d+)?|[+\-,)]/g) ?? [];
+  if (tokens.join("") !== formula.replace(/\s+/g, "")) throw new Error(`${where}: unsupported formula "${formula}"`);
+  let at = 0;
+  const fail = (): never => {
+    throw new Error(`${where}: unsupported formula "${formula}"`);
+  };
+  const operand = (): Buffer => {
+    const t = tokens[at++] ?? fail();
+    if (t === "SUM(") {
+      const args: Buffer[] = [];
+      do {
+        const a = tokens[at++] ?? fail();
+        if (a.includes(":")) {
+          const [first, last] = a.split(":").map((r) => cellRef(r, where));
+          args.push(Buffer.concat([Buffer.from([0x25]), first!.subarray(0, 2), last!.subarray(0, 2), first!.subarray(2), last!.subarray(2)])); // PtgArea
+        } else if (/^[A-Z]/.test(a)) args.push(Buffer.concat([Buffer.from([0x24]), cellRef(a, where)])); // PtgRef
+        else fail();
+      } while (tokens[at] === "," && ++at);
+      if (tokens[at++] !== ")") fail();
+      return Buffer.concat([...args, Buffer.from([0x42, args.length]), u16(4)]); // PtgFuncVar, value class: SUM (function 4)
+    }
+    if (/^[A-Z]/.test(t)) return Buffer.concat([Buffer.from([0x44]), cellRef(t, where)]); // PtgRef, value class
+    const n = Number(t);
+    if (Number.isNaN(n)) fail();
+    if (Number.isInteger(n) && n <= 0xffff) return Buffer.concat([Buffer.from([0x1e]), u16(n)]); // PtgInt
+    const b = Buffer.alloc(9);
+    b[0] = 0x1f; // PtgNum
+    b.writeDoubleLE(n, 1);
+    return b;
+  };
+  let out = operand();
+  while (at < tokens.length) {
+    const op = tokens[at++];
+    if (op !== "+" && op !== "-") fail();
+    out = Buffer.concat([out, operand(), Buffer.from([op === "+" ? 0x03 : 0x04])]); // PtgAdd, PtgSub
+  }
+  return out;
+}
+
 /** Builds the .xls file for a workbook. Output is deterministic. */
 export function buildXls(source: XlsSource): Buffer {
   if (source.sheets.length === 0) throw new Error("a workbook needs at least one sheet");
@@ -131,7 +185,8 @@ export function buildXls(source: XlsSource): Buffer {
       row.forEach((cell, c) => {
         if (cell === null) return;
         const where = `${sheet.name}!${columnName(c)}${r + 1}`;
-        const spec = typeof cell === "object" ? cell : typeof cell === "number" ? { number: cell } : { text: cell };
+        const spec: Exclude<XlsCell, null | string | number> = typeof cell === "object" ? cell : typeof cell === "number" ? { number: cell } : { text: cell };
+        if (spec.formula !== undefined && spec.number === undefined) throw new Error(`${where}: a formula needs its calculated result as number`);
         const kinds = [spec.text, spec.number, spec.date].filter((v) => v !== undefined).length;
         if (kinds !== 1) throw new Error(`${where}: a cell holds exactly one of text, number or date`);
         const fmt = spec.date !== undefined ? FMT_DATE : spec.format === "amount" ? FMT_AMOUNT : 0;
@@ -140,6 +195,12 @@ export function buildXls(source: XlsSource): Buffer {
         const head = u16(r, c, ixfe);
         if (spec.text !== undefined) {
           cells.push(record(0x0204, Buffer.concat([head, unicodeString(spec.text)]))); // LABEL
+        } else if (spec.formula !== undefined) {
+          // FORMULA: cached result, flags (fAlwaysCalc: Excel recalculates on open), chn, then the parsed formula.
+          const rgce = parseFormula(spec.formula, where);
+          const value = Buffer.alloc(8);
+          value.writeDoubleLE(spec.number!, 0);
+          cells.push(record(0x0006, Buffer.concat([head, value, u16(0x0001), Buffer.alloc(4), u16(rgce.length), rgce])));
         } else {
           const value = Buffer.alloc(8);
           value.writeDoubleLE(spec.number ?? dateSerial(spec.date!), 0);

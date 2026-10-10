@@ -72,6 +72,16 @@
   .g3 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); }
   .chart { width: 100%; }
   .chart svg { display: block; overflow: visible; }
+  /* Cost table: a family's subtotal row and the grand total stand out from the level rows. */
+  #cost-table tr.sub td { font-weight: 600; background: var(--hover); }
+  #cost-table tr.total td { font-weight: 700; border-top: 2px solid var(--axis); }
+  #cost-table td.indent { padding-left: 24px; }
+  #cost-table .api { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  /* Linked highlight: one entity lit across charts, the rest dimmed. */
+  .linked [data-key] { transition: opacity 120ms; }
+  .linked [data-key]:not(.hl) { opacity: 0.25; }
+  .linked [data-key].hl text { font-weight: 600; }
+  [data-key] { cursor: pointer; }
   .scroll { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; vertical-align: top; }
@@ -163,6 +173,21 @@
     <div class="tiles" id="tiles"></div>
 
     <section>
+      <h2>Cost of the tests</h2>
+      <p class="note" id="cost-note"></p>
+      <div class="card scroll"><table id="cost-table"></table></div>
+    </section>
+
+    <section>
+      <h2>Score against cost</h2>
+      <div class="grid">
+        <div class="card"><h3 id="scatter-tokens-title"></h3><div class="chart" id="scatter-tokens"></div></div>
+        <div class="card"><h3 id="scatter-time-title"></h3><div class="chart" id="scatter-time"></div></div>
+        <div class="card"><h3 id="scatter-cost-title"></h3><p class="note" id="scatter-cost-note"></p><div class="chart" id="scatter-cost"></div></div>
+      </div>
+    </section>
+
+    <section>
       <h2>Headline results</h2>
       <p class="note">The key result is the number of cases each model passed. A case passes only on an exact match; every other case failed, whether the answer was wrong, partly right or never came (an error). Next to it: the pass rate with its 95% confidence interval, ranks that only separate models whose intervals don't overlap, partial credit as F1, and cost per task. Click a column to sort.</p>
       <div class="card scroll"><table id="headline"></table></div>
@@ -206,25 +231,16 @@
     </section>
 
     <section>
-      <h2>Score against cost</h2>
-      <div class="grid g2">
-        <div class="card"><h3 id="scatter-tokens-title"></h3><div class="chart" id="scatter-tokens"></div></div>
-        <div class="card"><h3 id="scatter-time-title"></h3><div class="chart" id="scatter-time"></div></div>
-      </div>
+      <h2>Pass rate by difficulty</h2>
+      <p class="note">One chart per difficulty level from the cases' meta.json, each sorted by its own pass rate, best first. Bars are coloured by provider, most vivid for the largest model (bigger model, then higher reasoning level) and paler for smaller ones. Each bar shows the pass rate and passed out of run; with only a case or two at a level, read it as a hint, not a ranking.</p>
+      <div class="legend" id="provider-legend"></div>
+      <div class="grid g3" id="difficulty-charts"></div>
     </section>
 
     <section>
       <h2>Per-case results</h2>
       <p class="note">Each cell is one case's score for the selected metric. E marks a case that errored, T one that hit the turn limit. Hover a cell for every metric.</p>
       <div class="card scroll"><div class="chart" id="case-heatmap"></div><div class="legend" id="seq-legend"></div></div>
-    </section>
-
-    <section>
-      <h2>Scores by difficulty and tag</h2>
-      <div class="grid g2">
-        <div class="card scroll"><h3>By difficulty</h3><div class="chart" id="difficulty-heatmap"></div></div>
-        <div class="card scroll"><h3>By tag</h3><div class="chart" id="tag-heatmap"></div></div>
-      </div>
     </section>
 
     <section>
@@ -270,6 +286,7 @@ const fmt = {
   int: (v) => (v == null ? "–" : Math.round(v).toLocaleString()),
   num: (v) => (v == null ? "–" : v >= 100 ? Math.round(v).toLocaleString() : v.toFixed(1)),
   tokens: (v) => (v == null ? "–" : v >= 1e6 ? `${(v / 1e6).toFixed(2)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}k` : String(Math.round(v))),
+  usd: (v) => (v == null ? "–" : v === 0 ? "$0" : v >= 1 ? `$${v.toFixed(2)}` : `$${Number(v.toPrecision(2))}`),
   date: (iso) => (iso ? iso.slice(0, 16).replace("T", " ") : "–"),
 };
 /** Display names: exact_match is the benchmark's pass rate. */
@@ -297,23 +314,34 @@ function tip(title, rows = [], text) {
 let runs = [];        // [{ folder, summary }], one per model
 let models = [];      // model specs, grouped by family, most capable first; index = colour slot
 let families = [];    // model families, sorted
-const state = { test: "__all", metric: null, sort: { key: null, dir: -1 }, headSort: { key: null, dir: 1 } };
+const state = { test: "__all", metric: null, sort: { key: null, dir: -1 }, headSort: { key: null, dir: 1 }, costSort: { key: null, dir: -1 } };
 
 const modelOf = (s) => s.model?.spec ?? `${s.model?.provider}:${s.model?.modelId}`;
 const startOf = (s) => s.updatedAt ?? "";
 const testsWithCases = (s) => (s.tests ?? []).filter((t) => (t.cases ?? t.caseResults?.length ?? 0) > 0);
 
-/** Reasoning levels, least to most capable. */
-const LEVELS = ["off", "low", "high", "max"];
+/**
+ * Reasoning levels by rank, least to most capable: DeepSeek's off, low, high,
+ * max and OpenAI's none, low, medium, high, xhigh on one scale.
+ */
+const LEVEL_RANK = { off: 0, none: 0, low: 1, medium: 2, high: 3, max: 4, xhigh: 4 };
+const rankOf = (level) => LEVEL_RANK[level] ?? 4;
 
 /**
  * A model's family and reasoning level: "ds-flash-reasoning-high" is family
  * ds-flash at level high. A model without a level is a family of its own (level null).
  */
 function familyOf(model) {
-  const m = model.match(/^(.*)-reasoning-(off|low|high|max)$/);
+  // Anthropic's named models carry the effort level without "-reasoning": at-sonnet-high.
+  const m = model.match(/^(.*)-reasoning-(off|none|low|medium|high|max|xhigh)$/) ?? model.match(/^(at-[a-z]+)-(low|medium|high|max)$/);
   return m ? { family: m[1], level: m[2] } : { family: model, level: null };
 }
+
+/** A model's display name: "ds-flash-reasoning-high" shows as "ds-flash-high". */
+const nameOf = (model) => {
+  const { family, level } = familyOf(model);
+  return level ? `${family}-${level}` : model;
+};
 
 /** Each model's own hue: slots in palette order over the models, grouped by family. */
 function colorOf(model) {
@@ -321,17 +349,17 @@ function colorOf(model) {
   return i >= 0 && i < 8 ? `var(--s${i + 1})` : "var(--other)";
 }
 
-/** Reasoning level as a 1-4 bar signal glyph (off = 1 bar, max = 4); empty for models without levels. */
+/** Reasoning level as a 1-5 bar signal glyph (off or none = 1 bar, max or xhigh = 5); empty for models without levels. */
 function levelGlyph(model) {
   const { level } = familyOf(model);
   if (!level) return "";
-  const on = LEVELS.indexOf(level) + 1;
-  const bars = [0, 1, 2, 3].map((i) => `<rect class="${i < on ? "on" : ""}" x="${i * 4}" y="${9 - (i * 2 + 3)}" width="3" height="${i * 2 + 3}" rx="0.5"/>`).join("");
-  return `<svg class="lvl" width="15" height="10" role="img" aria-label="reasoning ${level}"><title>reasoning: ${level}</title>${bars}</svg>`;
+  const on = rankOf(level) + 1;
+  const bars = [0, 1, 2, 3, 4].map((i) => `<rect class="${i < on ? "on" : ""}" x="${i * 4}" y="${10 - (i * 2 + 2)}" width="3" height="${i * 2 + 2}" rx="0.5"/>`).join("");
+  return `<svg class="lvl" width="19" height="10" role="img" aria-label="reasoning ${level}"><title>reasoning: ${level}</title>${bars}</svg>`;
 }
 
 /** A model's swatch, name and reasoning glyph, for tables and cards. */
-const modelTag = (model) => `<span class="sw" style="background:${colorOf(model)}"></span> ${esc(model)}${levelGlyph(model)}`;
+const modelTag = (model) => `<span class="sw" style="background:${colorOf(model)}"></span> ${esc(nameOf(model))}${levelGlyph(model)}`;
 
 function allTests() {
   const names = new Set();
@@ -401,6 +429,8 @@ function aggregate(cases) {
   const agent = cases.map((c) => usageOf(c.usage));
   const outcomes = Object.fromEntries(OUTCOMES.map((o) => [o.key, cases.filter((c) => outcomeOf(c) === o.key).length]));
   const solved = cases.filter((c) => c.metrics?.exact_match === 1).length;
+  // Cost needs a price for every case; summaries before schema 9 have none.
+  const costs = cases.map((c) => c.costUsd);
   return {
     n: cases.length,
     outcomes,
@@ -423,6 +453,7 @@ function aggregate(cases) {
       cached: mean(agent.map((u) => u.cachedInputTokens)),
       output: mean(agent.map((u) => u.outputTokens)),
     },
+    cost: cases.length && costs.every((c) => typeof c === "number") ? mean(costs) : null,
   };
 }
 
@@ -441,6 +472,21 @@ function metricNames() {
 }
 
 // ---------- chart primitives (plain SVG) ----------
+/**
+ * Ticks for a log axis on the 1-2-5 sequence, from the largest step at or below
+ * min to the smallest at or above max; over many decades, powers of ten only.
+ */
+function logTicks(min, max) {
+  const steps = [];
+  for (let e = Math.floor(Math.log10(min)) - 1; e <= Math.ceil(Math.log10(max)) + 1; e++) for (const m of [1, 2, 5]) steps.push(+(m * 10 ** e).toPrecision(1));
+  const lo = steps.filter((t) => t <= min).pop() ?? steps[0];
+  const hi = steps.find((t) => t >= max) ?? steps[steps.length - 1];
+  const ticks = steps.filter((t) => t >= lo && t <= hi);
+  if (ticks.length <= 8) return ticks;
+  const decades = ticks.filter((t) => Math.abs(Math.log10(t) - Math.round(Math.log10(t))) < 1e-9);
+  return [...new Set([lo, ...decades, hi])];
+}
+
 function niceTicks(max, count = 4) {
   if (!(max > 0)) return [0, 1];
   const raw = max / count;
@@ -481,6 +527,8 @@ function hbars(el, rows, { max, ticks: tickFmt = fmt.num, domainMax } = {}) {
   }
   rows.forEach((r, i) => {
     const y = top + i * rowH + (rowH - barH) / 2;
+    // A row's key (optional) lets linked charts highlight the same entity.
+    if (r.key != null) s += `<g data-key="${esc(r.key)}">`;
     s += `<text class="ink" x="${labelW - 10}" y="${y + barH / 2 + 4}" text-anchor="end">${esc(r.label)}</text>`;
     let acc = 0;
     const segs = r.segments.filter((g) => g.value > 0);
@@ -498,6 +546,7 @@ function hbars(el, rows, { max, ticks: tickFmt = fmt.num, domainMax } = {}) {
       acc += g.value;
     });
     s += `<text class="ink" x="${x(acc) + 6}" y="${y + barH / 2 + 4}">${esc(r.valueText ?? tickFmt(acc))}</text>`;
+    if (r.key != null) s += `</g>`;
   });
   s += `<line class="axisline" x1="${labelW}" x2="${labelW}" y1="${top}" y2="${top + rows.length * rowH}"/>`;
   el.innerHTML = s + `</svg>`;
@@ -531,18 +580,25 @@ function ranges(el, rows, tickFmt = fmt.num) {
   el.innerHTML = s + `</svg>`;
 }
 
-/** Scatter with direct labels. points: [{ x, y, label, color, tip }] */
-function scatter(el, points, { xFmt = fmt.num, yFmt = fmt.score, yMax = 1, xLabel, yLabel } = {}) {
+/** Scatter with direct labels. points: [{ x, y, label, color, tip }]. `xLog` puts x on a log scale, leaving out points at or below 0. */
+function scatter(el, points, { xFmt = fmt.num, yFmt = fmt.score, yMax = 1, xLabel, yLabel, xLog = false } = {}) {
+  if (xLog) points = points.filter((p) => p.x > 0);
   if (!points.length) { el.innerHTML = `<div class="empty">No data</div>`; return; }
-  const W = widthOf(el), H = 280;
-  const m = { l: 44, r: 24, t: 12, b: 40 };
-  const xt = niceTicks(Math.max(...points.map((p) => p.x)));
+  const W = widthOf(el), H = Math.max(360, Math.min(520, Math.round(W * 0.45)));
+  const m = { l: 44, r: 24, t: 18, b: 40 };
+  const xs = points.map((p) => p.x);
+  const xt = xLog ? logTicks(Math.min(...xs), Math.max(...xs)) : niceTicks(Math.max(...xs));
   const yt = niceTicks(yMax, 4);
-  const x = (v) => m.l + (v / xt[xt.length - 1]) * (W - m.l - m.r);
+  const [x0, x1] = [xt[0], xt[xt.length - 1]];
+  const x = xLog
+    ? (v) => m.l + ((Math.log10(v) - Math.log10(x0)) / (Math.log10(x1) - Math.log10(x0) || 1)) * (W - m.l - m.r)
+    : (v) => m.l + (v / x1) * (W - m.l - m.r);
   const y = (v) => H - m.b - (v / yt[yt.length - 1]) * (H - m.t - m.b);
   let s = `<svg width="${W}" height="${H}" role="img">`;
   for (const t of yt) s += `<line class="gridline" x1="${m.l}" x2="${W - m.r}" y1="${y(t)}" y2="${y(t)}"/><text class="muted" x="${m.l - 8}" y="${y(t) + 4}" text-anchor="end">${esc(yFmt(t))}</text>`;
-  for (const t of xt) s += `<text class="muted" x="${x(t)}" y="${H - m.b + 16}" text-anchor="middle">${esc(xFmt(t))}</text>`;
+  // Log ticks sit on round 1-2-5 steps, so drop a trailing ".0" (10.0 -> 10, 2.0k -> 2k).
+  const xTick = xLog ? (t) => xFmt(t).replace(/\.0(?=\D*$)/, "") : xFmt;
+  for (const t of xt) s += `<text class="muted" x="${x(t)}" y="${H - m.b + 16}" text-anchor="middle">${esc(xTick(t))}</text>`;
   s += `<line class="axisline" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>`;
   s += `<text class="muted" x="${(m.l + W - m.r) / 2}" y="${H - 4}" text-anchor="middle">${esc(xLabel)}</text>`;
   s += `<text class="muted" x="${m.l}" y="${m.t - 2}" text-anchor="start">${esc(yLabel)}</text>`;
@@ -551,20 +607,48 @@ function scatter(el, points, { xFmt = fmt.num, yFmt = fmt.score, yMax = 1, xLabe
   if (frontier.length > 1) {
     s += `<polyline points="${frontier.map((p) => `${x(p.x)},${y(p.y)}`).join(" ")}" fill="none" stroke="var(--muted)" stroke-width="1.5"/>`;
   }
-  // Labels: placed greedily, nudged until they clear the ones already placed.
-  const placed = [];
+  // Labels: each tries the spots right beside its dot first, avoiding every dot and the labels
+  // already placed; a label that has to move further away gets a leader line in the model's colour.
+  const LH = 14; // label box height
+  const dots = points.map((p) => ({ cx: x(p.x), cy: y(p.y) }));
+  const boxes = [];
+  const overlaps = (b) =>
+    b.left < m.l || b.right > W - m.r || b.top < m.t || b.bottom > H - m.b ||
+    boxes.some((o) => b.left < o.right && b.right > o.left && b.top < o.bottom && b.bottom > o.top) ||
+    dots.some((d) => d.cx + 7 > b.left && d.cx - 7 < b.right && d.cy + 7 > b.top && d.cy - 7 < b.bottom);
+  const boxAt = (left, top, w) => ({ left, right: left + w, top, bottom: top + LH });
   const labels = [];
-  for (const p of [...points].sort((a, b) => b.y - a.y || a.x - b.x)) {
+  // Place labels in crowded areas first, so they get the spots closest to their dots.
+  const crowd = (p) => dots.filter((d) => Math.hypot(d.cx - x(p.x), d.cy - y(p.y)) < 60).length;
+  for (const p of [...points].sort((a, b) => crowd(b) - crowd(a) || b.y - a.y || a.x - b.x)) {
     const px = x(p.x), py = y(p.y);
     const w = textWidth(p.label);
-    const anchor = px + 9 + w > W - m.r ? "end" : "start";
-    const left = anchor === "start" ? px + 9 : px - 9 - w;
-    let ly = py - 7;
-    // Nudge away from the nearer edge: down in the top half, up in the bottom half, clear of the x axis.
-    const step = py > H / 2 ? -13 : 13;
-    while (placed.some((b) => left < b.right && left + w > b.left && Math.abs(ly - b.y) < 13)) ly += step;
-    placed.push({ left, right: left + w, y: ly });
-    labels.push(`<text class="ink" x="${anchor === "start" ? px + 9 : px - 9}" y="${ly}" text-anchor="${anchor}">${esc(p.label)}</text>`);
+    const near = [
+      boxAt(px + 9, py - LH / 2, w), boxAt(px - 9 - w, py - LH / 2, w),
+      boxAt(px - w / 2, py - 9 - LH, w), boxAt(px - w / 2, py + 9, w),
+      boxAt(px + 6, py - 6 - LH, w), boxAt(px + 6, py + 6, w),
+      boxAt(px - 6 - w, py - 6 - LH, w), boxAt(px - 6 - w, py + 6, w),
+    ];
+    let box = near.find((b) => !overlaps(b)), leader = false;
+    // Nothing free next to the dot: search outward, nearest spot first.
+    for (let r = 1; !box && r <= 24; r++) {
+      const dy = r * (LH + 2);
+      box = [
+        boxAt(px + 14, py - LH / 2 - dy, w), boxAt(px + 14, py - LH / 2 + dy, w),
+        boxAt(px - 14 - w, py - LH / 2 - dy, w), boxAt(px - 14 - w, py - LH / 2 + dy, w),
+        boxAt(px - w / 2, py - 9 - LH - dy, w), boxAt(px - w / 2, py + 9 + dy, w),
+      ].find((b) => !overlaps(b));
+      leader = !!box;
+    }
+    box ??= near[0];
+    boxes.push(box);
+    if (leader) {
+      // Line from the dot's edge to the nearest point on the label box.
+      const tx = Math.max(box.left, Math.min(px, box.right)), ty = Math.max(box.top, Math.min(py, box.bottom));
+      const d = Math.hypot(tx - px, ty - py) || 1;
+      labels.push(`<line x1="${px + ((tx - px) / d) * 6}" y1="${py + ((ty - py) / d) * 6}" x2="${tx}" y2="${ty}" stroke="${p.color}" stroke-width="1"/>`);
+    }
+    labels.push(`<text class="ink" x="${box.left}" y="${box.bottom - 3}">${esc(p.label)}</text>`);
   }
   for (const p of points) {
     const px = x(p.x), py = y(p.y);
@@ -621,21 +705,22 @@ function render() {
     const members = models.filter((m) => shown.includes(m) && familyOf(m).family === f);
     if (!members.length) return "";
     if (members.length === 1 && !familyOf(members[0]).level) {
-      return `<span class="item"><span class="sw" style="background:${colorOf(members[0])}"></span>${esc(members[0])}</span>`;
+      return `<span class="item"><span class="sw" style="background:${colorOf(members[0])}"></span>${esc(nameOf(members[0]))}</span>`;
     }
     return `<span class="item fam"><b>${esc(f)}</b>${members.map((m) => `<span class="item"><span class="sw" style="background:${colorOf(m)}"></span>${esc(familyOf(m).level)}${levelGlyph(m)}</span>`).join("")}</span>`;
   }).join("");
 
   renderTiles(view);
+  renderCostTable(view);
   renderHeadline(view);
   renderCards(view, metrics, metric);
   renderLeaderboard(view, metrics);
 
   // Case outcomes: one 100% stacked bar per model.
   hbars($("outcomes"), view.map((v) => {
-    const t = tip(v.model, OUTCOMES.map((o) => [o.name, `${v.agg.outcomes[o.key]} of ${v.agg.n}`]));
+    const t = tip(nameOf(v.model), OUTCOMES.map((o) => [o.name, `${v.agg.outcomes[o.key]} of ${v.agg.n}`]));
     return {
-      label: v.model,
+      label: nameOf(v.model),
       valueText: `${v.agg.outcomes.exact} of ${v.agg.n} passed`,
       segments: OUTCOMES.map((o) => ({ value: v.agg.n ? v.agg.outcomes[o.key] / v.agg.n : 0, color: o.color, tip: t })),
     };
@@ -646,66 +731,73 @@ function render() {
   $("metric-charts").innerHTML = metrics.map((m, i) => `<div class="card"><h3>${esc(label(m))}</h3><div class="chart" id="mc-${i}"></div></div>`).join("");
   metrics.forEach((m, i) => {
     hbars($(`mc-${i}`), view.map((v) => ({
-      label: v.model,
+      label: nameOf(v.model),
       valueText: v.agg.metrics[m] == null ? "– (test not run)" : fmt.score(v.agg.metrics[m]),
-      segments: [{ value: v.agg.metrics[m] ?? 0, color: colorOf(v.model), tip: tip(v.model, [[label(m), fmt.score(v.agg.metrics[m])], ["Cases", v.agg.n]]) }],
+      segments: [{ value: v.agg.metrics[m] ?? 0, color: colorOf(v.model), tip: tip(nameOf(v.model), [[label(m), fmt.score(v.agg.metrics[m])], ["Cases", v.agg.n]]) }],
     })), { domainMax: 1, ticks: fmt.score });
   });
+
+  renderDifficulty(view);
 
   // Score against cost.
   $("scatter-tokens-title").textContent = `${label(metric ?? "")} against agent tokens per case (line: efficiency frontier)`;
   $("scatter-time-title").textContent = `${label(metric ?? "")} against seconds per case (line: efficiency frontier)`;
-  const sp = (xv, xname, xf) => view.filter((v) => v.agg.metrics[metric] != null).map((v) => ({
-    x: xv(v), y: v.agg.metrics[metric] ?? 0, label: v.model, color: colorOf(v.model),
-    tip: tip(v.model, [[label(metric), fmt.score(v.agg.metrics[metric])], [xname, xf(xv(v))], ["Cases", v.agg.n]]),
+  const sp = (xv, xname, xf, list = view) => list.filter((v) => v.agg.metrics[metric] != null).map((v) => ({
+    x: xv(v), y: v.agg.metrics[metric] ?? 0, label: nameOf(v.model), color: colorOf(v.model),
+    tip: tip(nameOf(v.model), [[label(metric), fmt.score(v.agg.metrics[metric])], [xname, xf(xv(v))], ["Cases", v.agg.n]]),
   }));
-  scatter($("scatter-tokens"), sp((v) => v.agg.agent.input + v.agg.agent.output, "Tokens per case", fmt.tokens), { xFmt: fmt.tokens, xLabel: "agent tokens per case (input + output)", yLabel: label(metric ?? "") });
-  scatter($("scatter-time"), sp((v) => v.agg.seconds.mean, "Seconds per case", fmt.num), { xFmt: fmt.num, xLabel: "seconds per case", yLabel: label(metric ?? "") });
+  scatter($("scatter-tokens"), sp((v) => v.agg.agent.input + v.agg.agent.output, "Tokens per case", fmt.tokens), { xFmt: fmt.tokens, xLabel: "agent tokens per case (input + output), log scale", yLabel: label(metric ?? ""), xLog: true });
+  scatter($("scatter-time"), sp((v) => v.agg.seconds.mean, "Seconds per case", fmt.num), { xFmt: fmt.num, xLabel: "seconds per case, log scale", yLabel: label(metric ?? ""), xLog: true });
+  $("scatter-cost-title").textContent = `${label(metric ?? "")} against cost per case in USD (line: efficiency frontier)`;
+  const priced = view.filter((v) => v.agg.cost != null);
+  const unpriced = view.filter((v) => v.agg.cost == null).map((v) => nameOf(v.model));
+  $("scatter-cost-note").textContent = `Agent tokens at list prices: uncached input, cache reads, cache writes and output each at their own rate; DeepSeek at its peak or off-peak price by when the case ran.` +
+    (unpriced.length ? ` Not shown, without a cost (no known price, or Claude results recorded before cache writes were counted: rerun them): ${unpriced.join(", ")}.` : "");
+  scatter($("scatter-cost"), sp((v) => v.agg.cost, "Cost per case", fmt.usd, priced), { xFmt: fmt.usd, xLabel: "USD per case, log scale", yLabel: label(metric ?? ""), xLog: true });
 
   renderCaseHeatmap(view, metric, metrics);
-  renderGroupHeatmaps(view, metric);
 
   // Effort and tokens: models by pass rate, so cost reads against the result.
 
   // Effort.
   ranges($("turns-range"), view.map((v) => ({
-    label: v.model, color: colorOf(v.model), ...v.agg.turns,
-    tip: tip(v.model, [["Mean", fmt.num(v.agg.turns.mean)], ["Min", v.agg.turns.min], ["Max", v.agg.turns.max], ["Hit turn limit", `${v.agg.turnLimit} of ${v.agg.n}`]]),
+    label: nameOf(v.model), color: colorOf(v.model), ...v.agg.turns,
+    tip: tip(nameOf(v.model), [["Mean", fmt.num(v.agg.turns.mean)], ["Min", v.agg.turns.min], ["Max", v.agg.turns.max], ["Hit turn limit", `${v.agg.turnLimit} of ${v.agg.n}`]]),
   })));
   ranges($("seconds-range"), view.map((v) => ({
-    label: v.model, color: colorOf(v.model), ...v.agg.seconds,
-    tip: tip(v.model, [["Mean", fmt.num(v.agg.seconds.mean)], ["Min", fmt.num(v.agg.seconds.min)], ["Max", fmt.num(v.agg.seconds.max)]]),
+    label: nameOf(v.model), color: colorOf(v.model), ...v.agg.seconds,
+    tip: tip(nameOf(v.model), [["Mean", fmt.num(v.agg.seconds.mean)], ["Min", fmt.num(v.agg.seconds.min)], ["Max", fmt.num(v.agg.seconds.max)]]),
   })));
 
   // Tokens.
   hbars($("input-tokens"), view.map((v) => {
     const { input, cached } = v.agg.agent;
     const share = input ? cached / input : 0;
-    const t = tip(v.model, [["Input per case", fmt.tokens(input)], ["Cached", `${fmt.tokens(cached)} (${fmt.pct(share)})`], ["Not cached", fmt.tokens(input - cached)]]);
+    const t = tip(nameOf(v.model), [["Input per case", fmt.tokens(input)], ["Cached", `${fmt.tokens(cached)} (${fmt.pct(share)})`], ["Not cached", fmt.tokens(input - cached)]]);
     return {
-      label: v.model, valueText: `${fmt.tokens(input)} · ${fmt.pct(share)} cached`,
+      label: nameOf(v.model), valueText: `${fmt.tokens(input)} · ${fmt.pct(share)} cached`,
       segments: [{ value: cached, color: "var(--seq-lo)", tip: t }, { value: input - cached, color: "var(--seq-hi)", tip: t }],
     };
   }), { ticks: fmt.tokens });
   $("input-legend").innerHTML = `<span class="item"><span class="sw" style="background:var(--seq-lo)"></span>Read from cache</span><span class="item"><span class="sw" style="background:var(--seq-hi)"></span>Not cached</span>`;
   hbars($("output-tokens"), view.map((v) => ({
-    label: v.model, valueText: fmt.tokens(v.agg.agent.output),
-    segments: [{ value: v.agg.agent.output, color: colorOf(v.model), tip: tip(v.model, [["Output per case", fmt.tokens(v.agg.agent.output)]]) }],
+    label: nameOf(v.model), valueText: fmt.tokens(v.agg.agent.output),
+    segments: [{ value: v.agg.agent.output, color: colorOf(v.model), tip: tip(nameOf(v.model), [["Output per case", fmt.tokens(v.agg.agent.output)]]) }],
   })), { ticks: fmt.tokens });
 
   // Activity.
   hbars($("db-queries"), view.map((v) => {
     const a = v.agg.activity;
-    const t = tip(v.model, [["Queries per case", fmt.num(a.dbQueries)], ["Succeeded", fmt.num(a.dbQueriesSucceeded)], ["Failed", fmt.num(a.dbQueriesFailed)]]);
+    const t = tip(nameOf(v.model), [["Queries per case", fmt.num(a.dbQueries)], ["Succeeded", fmt.num(a.dbQueriesSucceeded)], ["Failed", fmt.num(a.dbQueriesFailed)]]);
     return {
-      label: v.model, valueText: `${fmt.num(a.dbQueries)} (${fmt.num(a.dbQueriesFailed)} failed)`,
+      label: nameOf(v.model), valueText: `${fmt.num(a.dbQueries)} (${fmt.num(a.dbQueriesFailed)} failed)`,
       segments: [{ value: a.dbQueriesSucceeded, color: "var(--seq-hi)", tip: t }, { value: a.dbQueriesFailed, color: "var(--critical)", tip: t }],
     };
   }));
   $("db-legend").innerHTML = `<span class="item"><span class="sw" style="background:var(--seq-hi)"></span>Succeeded</span><span class="item"><span class="sw" style="background:var(--critical)"></span>Failed</span>`;
   hbars($("files-checked"), view.map((v) => ({
-    label: v.model, valueText: fmt.num(v.agg.activity.filesChecked),
-    segments: [{ value: v.agg.activity.filesChecked, color: colorOf(v.model), tip: tip(v.model, [["Files per case", fmt.num(v.agg.activity.filesChecked)]]) }],
+    label: nameOf(v.model), valueText: fmt.num(v.agg.activity.filesChecked),
+    segments: [{ value: v.agg.activity.filesChecked, color: colorOf(v.model), tip: tip(nameOf(v.model), [["Files per case", fmt.num(v.agg.activity.filesChecked)]]) }],
   })));
 
 }
@@ -719,22 +811,22 @@ function renderCards(view, metrics, metric) {
     const color = colorOf(v.model);
     const score = v.agg.metrics[metric];
     const strip = OUTCOMES.filter((o) => v.agg.outcomes[o.key] > 0).map((o) =>
-      `<span tabindex="0" style="flex:${v.agg.outcomes[o.key]};background:${o.color}" data-tip="${tip(v.model, [[o.name, `${v.agg.outcomes[o.key]} of ${v.agg.n} cases`]])}"></span>`,
+      `<span tabindex="0" style="flex:${v.agg.outcomes[o.key]};background:${o.color}" data-tip="${tip(nameOf(v.model), [[o.name, `${v.agg.outcomes[o.key]} of ${v.agg.n} cases`]])}"></span>`,
     ).join("");
     const rows = metrics.map((m) => {
       const val = v.agg.metrics[m];
-      return `<span class="ml">${esc(label(m))}</span><span class="mbar" tabindex="0" data-tip="${tip(v.model, [[label(m), fmt.score(val)]])}">${bar(val, color)}</span><span class="mv">${fmt.score(val)}</span>`;
+      return `<span class="ml">${esc(label(m))}</span><span class="mbar" tabindex="0" data-tip="${tip(nameOf(v.model), [[label(m), fmt.score(val)]])}">${bar(val, color)}</span><span class="mv">${fmt.score(val)}</span>`;
     }).join("");
     const chips = [
-      `<span class="chip" data-tip="${tip(v.model, [["Turns per case", fmt.num(v.agg.turns.mean)], ["Max", v.agg.turns.max]])}">${fmt.num(v.agg.turns.mean)} turns</span>`,
-      `<span class="chip" data-tip="${tip(v.model, [["Seconds per case", fmt.num(v.agg.seconds.mean)]])}">${fmt.num(v.agg.seconds.mean)} s</span>`,
-      `<span class="chip" data-tip="${tip(v.model, [["Agent tokens per case", fmt.tokens(v.agg.agent.input + v.agg.agent.output)]])}">${fmt.tokens(v.agg.agent.input + v.agg.agent.output)} tokens</span>`,
+      `<span class="chip" data-tip="${tip(nameOf(v.model), [["Turns per case", fmt.num(v.agg.turns.mean)], ["Max", v.agg.turns.max]])}">${fmt.num(v.agg.turns.mean)} turns</span>`,
+      `<span class="chip" data-tip="${tip(nameOf(v.model), [["Seconds per case", fmt.num(v.agg.seconds.mean)]])}">${fmt.num(v.agg.seconds.mean)} s</span>`,
+      `<span class="chip" data-tip="${tip(nameOf(v.model), [["Agent tokens per case", fmt.tokens(v.agg.agent.input + v.agg.agent.output)]])}">${fmt.tokens(v.agg.agent.input + v.agg.agent.output)} tokens</span>`,
       v.agg.errors ? `<span class="chip err">✕ ${v.agg.errors} error${v.agg.errors === 1 ? "" : "s"}</span>` : "",
     ].join("");
     return `<div class="mcard">
-      <div class="mhead"><span class="sw" style="background:${color}"></span><span class="mname" title="${esc(v.model)}">${esc(v.model)}</span>${levelGlyph(v.model)}<span class="rank">#${i + 1}</span></div>
+      <div class="mhead"><span class="sw" style="background:${color}"></span><span class="mname" title="${esc(nameOf(v.model))}">${esc(nameOf(v.model))}</span>${levelGlyph(v.model)}<span class="rank">#${i + 1}</span></div>
       <div class="hero"><span class="hv">${metric === "exact_match" ? `${v.agg.passed}/${v.agg.n}` : fmt.score(score)}</span><span class="hk">${metric === "exact_match" ? `passed · ${v.agg.failed} failed<br>pass rate ${fmt.pct(v.agg.success.rate)} · 95% CI ${fmt.pct(v.agg.success.lo)}–${fmt.pct(v.agg.success.hi)}` : `${esc(label(metric ?? ""))} · ${v.agg.n} case${v.agg.n === 1 ? "" : "s"}`}</span></div>
-      <div class="meter" tabindex="0" data-tip="${tip(v.model, [[label(metric ?? ""), fmt.score(score)]])}">${bar(score, color)}</div>
+      <div class="meter" tabindex="0" data-tip="${tip(nameOf(v.model), [[label(metric ?? ""), fmt.score(score)]])}">${bar(score, color)}</div>
       <div class="ostrip">${strip}</div>
       <div class="ocount">${v.agg.outcomes.exact} passed · ${v.agg.outcomes.partial} partly right · ${v.agg.outcomes.none} nothing right${v.agg.outcomes.error ? ` · ${v.agg.outcomes.error} errored` : ""}</div>
       <div class="mrows">${rows}</div>
@@ -767,6 +859,7 @@ function renderHeadline(view) {
     { key: "rate", name: "Pass rate (95% CI)", get: (r) => r.s.rate },
     { key: "f1", name: "F1", num: true, get: (r) => r.f1 },
     { key: "tokens", name: "Tokens / task", num: true, get: (r) => r.v.agg.agent.input + r.v.agg.agent.output },
+    { key: "cost", name: "Cost / task", num: true, get: (r) => r.v.agg.cost },
     { key: "secs", name: "Seconds / task", num: true, get: (r) => r.v.agg.seconds.mean },
     { key: "turns", name: "Turns / task", num: true, get: (r) => r.v.agg.turns.mean },
   ];
@@ -789,8 +882,8 @@ function renderHeadline(view) {
       const rankTip = tip(`Rank ${rank}`, [], shared
         ? "Shared: the 95% intervals of these models overlap, so the data can't separate them."
         : `${rank - 1} model(s) are clearly better: their whole interval lies above this one.`);
-      const ciTip = tip(v.model, [["Pass rate", fmt.pct(s.rate)], ["Passed", `${s.k} of ${v.agg.n}`], ["95% CI", `${fmt.pct(s.lo)} – ${fmt.pct(s.hi)}`]]);
-      const failTip = tip(v.model, [["Failed", `${v.agg.failed} of ${v.agg.n}`], ["Wrong or partly right", v.agg.failed - v.agg.errors], ["Errors (API or turn limit)", v.agg.errors]]);
+      const ciTip = tip(nameOf(v.model), [["Pass rate", fmt.pct(s.rate)], ["Passed", `${s.k} of ${v.agg.n}`], ["95% CI", `${fmt.pct(s.lo)} – ${fmt.pct(s.hi)}`]]);
+      const failTip = tip(nameOf(v.model), [["Failed", `${v.agg.failed} of ${v.agg.n}`], ["Wrong or partly right", v.agg.failed - v.agg.errors], ["Errors (API or turn limit)", v.agg.errors]]);
       return `<tr><td class="num" tabindex="0" data-tip="${rankTip}">${rank}${shared ? "=" : ""}</td>` +
         `<td>${modelTag(v.model)}</td>` +
         `<td class="num"><b>${v.agg.passed}</b> / ${v.agg.n}</td>` +
@@ -798,6 +891,7 @@ function renderHeadline(view) {
         `<td><div class="ci" tabindex="0" data-tip="${ciTip}">${ciMark(s.rate ?? 0, s.lo, s.hi, color)}<span class="cv">${fmt.pct(s.rate)}</span><span class="cr">${fmt.pct(s.lo)}–${fmt.pct(s.hi)}</span></div></td>` +
         `<td class="num">${fmt.score(f1)}</td>` +
         `<td class="num">${fmt.tokens(v.agg.agent.input + v.agg.agent.output)}</td>` +
+        `<td class="num">${fmt.usd(v.agg.cost)}</td>` +
         `<td class="num">${fmt.num(v.agg.seconds.mean)}</td>` +
         `<td class="num">${fmt.num(v.agg.turns.mean)}</td></tr>`;
     }).join("") + `</tbody>`;
@@ -810,15 +904,112 @@ function renderHeadline(view) {
 }
 
 function renderTiles(view) {
-  const latest = runs.map((r) => startOf(r.summary)).filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b)).pop();
   const best = [...view].filter((v) => v.agg.success.rate != null).sort((a, b) => b.agg.success.rate - a.agg.success.rate || (b.agg.metrics.f1 ?? 0) - (a.agg.metrics.f1 ?? 0))[0];
   const tiles = [
     ["Models compared", view.length, `${models.length} with results`],
     ["Cases per model", view.length ? Math.max(...view.map((v) => v.agg.n)) : 0, selectedTests().join(", ")],
     ["Most cases passed", best ? `${best.agg.passed} / ${best.agg.n}` : "–", best ? `${best.model} · pass rate ${fmt.pct(best.agg.success.rate)}, 95% CI ${fmt.pct(best.agg.success.lo)}–${fmt.pct(best.agg.success.hi)}` : ""],
-    ["Last updated", fmt.date(latest), latest ? "Central European Time" : ""],
   ];
   $("tiles").innerHTML = tiles.map(([k, v, d]) => `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="d">${esc(d)}</div></div>`).join("");
+}
+
+/** The API model behind each family, shown next to its name in the cost table. */
+const FAMILY_API = {
+  "at-sonnet": "claude-sonnet-5-5", "at-haiku": "claude-haiku-5-5",
+  "oa-sol": "gpt-6.1-sol", "oa-luna": "gpt-6-luna",
+  "ds-v4p": "deepseek-v4-pro", "ds-flash": "deepseek-flash",
+};
+
+/**
+ * Cost of the tests: per model family and reasoning level, the cases run, the
+ * requests (model calls) they made, their tokens and what those cost at list
+ * prices (costUsd from summary.json), with a subtotal per family and a total.
+ */
+function renderCostTable(view) {
+  const totals = (cases) => {
+    const usages = cases.map((c) => c.usage ?? {});
+    const priced = cases.filter((c) => typeof c.costUsd === "number");
+    const requests = sum(cases.map((c) => c.turns ?? 0));
+    const cost = priced.length === cases.length && cases.length ? sum(priced.map((c) => c.costUsd)) : null;
+    return {
+      cases: cases.length, requests, cost, priced: priced.length,
+      input: sum(usages.map((u) => u.inputTokens ?? 0)),
+      cached: sum(usages.map((u) => u.cachedInputTokens ?? 0)),
+      written: sum(usages.map((u) => u.cacheWriteInputTokens ?? 0)),
+      output: sum(usages.map((u) => u.outputTokens ?? 0)),
+    };
+  };
+  const cells = (t) => {
+    const missing = t.cases - t.priced;
+    const costTip = missing ? tip("No total cost", [["Cases with a cost", `${t.priced} of ${t.cases}`]], "No known price, or Claude cases recorded before cache writes were counted: rerun them.") : null;
+    const costCell = (v) => (costTip ? `<td class="num" tabindex="0" data-tip="${costTip}">–</td>` : `<td class="num">${fmt.usd(v)}</td>`);
+    return `<td class="num">${fmt.int(t.cases)}</td><td class="num">${fmt.int(t.requests)}</td>` +
+      `<td class="num">${fmt.tokens(t.input)}</td><td class="num">${fmt.tokens(t.cached)}</td><td class="num">${fmt.tokens(t.written)}</td><td class="num">${fmt.tokens(t.output)}</td>` +
+      costCell(t.cost) + costCell(t.cost != null && t.cases ? t.cost / t.cases : null) + costCell(t.cost != null && t.requests ? t.cost / t.requests : null);
+  };
+  // Families in the models' order (grouped by family, most capable level first).
+  const byFamily = new Map();
+  for (const model of models) {
+    const v = view.find((x) => x.model === model);
+    if (!v) continue;
+    const { family } = familyOf(model);
+    if (!byFamily.has(family)) byFamily.set(family, []);
+    byFamily.get(family).push(v);
+  }
+  // Sortable columns; `get` reads a model row: { v, t } with t its totals.
+  const levelOf = (r) => familyOf(r.v.model).level;
+  const cols = [
+    { key: "model", name: "Model", get: (r) => r.v.model },
+    { key: "level", name: "Reasoning", get: (r) => (levelOf(r) == null ? null : rankOf(levelOf(r))) },
+    { key: "cases", name: "Cases", num: true, get: (r) => r.t.cases },
+    { key: "requests", name: "Requests", num: true, get: (r) => r.t.requests },
+    { key: "input", name: "Input tokens", num: true, get: (r) => r.t.input },
+    { key: "cached", name: "Cached input", num: true, get: (r) => r.t.cached },
+    { key: "written", name: "Cache writes", num: true, get: (r) => r.t.written },
+    { key: "output", name: "Output tokens", num: true, get: (r) => r.t.output },
+    { key: "cost", name: "Cost", num: true, get: (r) => r.t.cost },
+    { key: "perCase", name: "Cost / case", num: true, get: (r) => (r.t.cost != null && r.t.cases ? r.t.cost / r.t.cases : null) },
+    { key: "perRequest", name: "Cost / request", num: true, get: (r) => (r.t.cost != null && r.t.requests ? r.t.cost / r.t.requests : null) },
+  ];
+  const modelRow = (v, cls = "") => `<tr><td${cls ? ` class="${cls}"` : ""}>${modelTag(v.model)}</td><td>${esc(familyOf(v.model).level ?? "–")}</td>${cells(totals(v.cases))}</tr>`;
+  const { key: sortKey, dir } = state.costSort;
+  const col = cols.find((c) => c.key === sortKey && c.key !== "model");
+  let rows = "";
+  if (col) {
+    // Sorted: one flat list of models, so they compare across families; missing values last.
+    const list = [...byFamily.values()].flat().map((v) => ({ v, t: totals(v.cases) }));
+    list.sort((a, b) => {
+      const x = col.get(a), y = col.get(b);
+      if (x == null || y == null) return (x == null) - (y == null);
+      return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * dir;
+    });
+    rows = list.map(({ v }) => modelRow(v)).join("");
+  } else {
+    // Default: grouped by family, with a subtotal row each.
+    for (const [family, vs] of byFamily) {
+      const api = FAMILY_API[family];
+      if (vs.length > 1 || familyOf(vs[0].model).level) {
+        rows += `<tr class="sub"><td>${esc(family)}${api ? `<span class="api">${esc(api)}</span>` : ""}</td><td>all levels</td>${cells(totals(vs.flatMap((v) => v.cases)))}</tr>`;
+        rows += vs.map((v) => modelRow(v, "indent")).join("");
+      } else {
+        rows += modelRow(vs[0]);
+      }
+    }
+  }
+  const all = view.flatMap((v) => v.cases);
+  rows += `<tr class="total"><td>Total</td><td></td>${cells(totals(all))}</tr>`;
+  const arrow = (c) => (col && c.key === col.key ? (dir < 0 ? " ▾" : " ▴") : "");
+  $("cost-table").innerHTML =
+    `<thead><tr>${cols.map((c) => `<th class="sortable${c.num ? " num" : ""}" data-sort="${c.key}" title="${c.key === "model" ? "Group by model family" : "Sort"}">${esc(c.name)}${arrow(c)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody>`;
+  $("cost-table").querySelectorAll("th[data-sort]").forEach((th) => th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    // Model returns to the grouped view; a column sorts high to low first (reasoning: most capable first), then flips.
+    state.costSort = key === "model" ? { key: null, dir: -1 } : { key, dir: col && key === col.key ? -dir : -1 };
+    renderCostTable(view);
+  }));
+  const latest = latestOf(all);
+  $("cost-note").textContent = `What the selected tests cost each model's latest results at list prices (src/common/pricing.ts): uncached input, cache reads, cache writes and output each at their own rate. Requests are model calls; input tokens include the cached ones. ` +
+    `Cache writes are only recorded for Claude, so they show 0 elsewhere. A cost shows – when some cases have none; hover it for why. Click a column to sort the models across families; click Model to group them again. Last updated ${fmt.date(latest)} Central European Time.`;
 }
 
 /** The most recent updatedAt of some cases; CET strings with offsets, so compared as instants. */
@@ -841,6 +1032,7 @@ function renderLeaderboard(view, metrics) {
     { key: "tin", name: "Input tokens / case", num: true, get: (v) => v.agg.agent.input, fmt: fmt.tokens },
     { key: "cache", name: "Cached", num: true, get: (v) => (v.agg.agent.input ? v.agg.agent.cached / v.agg.agent.input : 0), fmt: fmt.pct },
     { key: "tout", name: "Output tokens / case", num: true, get: (v) => v.agg.agent.output, fmt: fmt.tokens },
+    { key: "cost", name: "Cost / case", num: true, get: (v) => v.agg.cost, fmt: fmt.usd },
     { key: "q", name: "DB queries / case", num: true, get: (v) => v.agg.activity.dbQueries, fmt: fmt.num },
     { key: "f", name: "Files / case", num: true, get: (v) => v.agg.activity.filesChecked, fmt: fmt.num },
   ];
@@ -868,7 +1060,7 @@ function caseTip(c, metrics) {
   rows.push(["Turns", c.turns ?? "–"], ["Seconds", fmt.num(c.seconds)], ["Input tokens", fmt.tokens(c.usage?.inputTokens)]);
   if (c.difficulty) rows.unshift(["Difficulty", c.difficulty]);
   const notes = [c.error ? `Error: ${c.error}` : "", c.turnLimitReached ? "Hit the turn limit." : ""].filter(Boolean).join("\n");
-  return tip(`${c.model} · ${c.test}/${c.caseId}`, rows, notes);
+  return tip(`${nameOf(c.model)} · ${c.test}/${c.caseId}`, rows, notes);
 }
 
 function renderCaseHeatmap(view, metric, metrics) {
@@ -886,26 +1078,112 @@ function renderCaseHeatmap(view, metric, metrics) {
       return { v: val, text: fmt.score(val) + flags, tip: caseTip(c, metrics) };
     }),
   }));
-  heatmap($("case-heatmap"), rows, view.map((v) => ({ label: v.model, color: colorOf(v.model) })));
+  heatmap($("case-heatmap"), rows, view.map((v) => ({ label: nameOf(v.model), color: colorOf(v.model) })));
   $("seq-legend").innerHTML = `<span class="item">0</span><span class="sw" style="width:120px;background:linear-gradient(90deg, var(--heat-0), var(--seq-hi))"></span><span class="item">1</span><span class="item"><span class="sw" style="background:var(--empty)"></span>Not run, or the metric doesn't apply</span>`;
 }
 
-function renderGroupHeatmaps(view, metric) {
-  const group = (el, keyOf) => {
-    const keys = [...new Set(view.flatMap((v) => v.cases.flatMap(keyOf)))].sort();
-    const rows = keys.map((k) => ({
-      label: k,
-      cells: view.map((v) => {
-        const cs = v.cases.filter((c) => keyOf(c).includes(k) && c.metricNames.includes(metric));
-        if (!cs.length) return null;
-        const val = mean(cs.map((c) => c.metrics?.[metric] ?? 0));
-        return { v: val, text: fmt.score(val), tip: tip(`${v.model} · ${k}`, [[label(metric), fmt.score(val)], ["Cases", cs.length]], cs.map((c) => `${c.test}/${c.caseId}`).join(", ")) };
-      }),
-    }));
-    heatmap(el, rows, view.map((v) => ({ label: v.model, color: colorOf(v.model) })));
+/** One hue per provider; models of other providers share the neutral. */
+const PROVIDER_COLORS = { anthropic: "var(--s2)", openai: "var(--s3)", deepseek: "var(--s1)" };
+const PROVIDER_NAMES = { anthropic: "Anthropic", openai: "OpenAI", deepseek: "DeepSeek" };
+/** Families by model size within a provider, larger first; unlisted families rank after these. */
+const FAMILY_SIZE = ["at-sonnet", "at-haiku", "oa-sol", "oa-luna", "ds-v4p", "ds-flash"];
+
+/** A model's provider, from its summary. */
+function providerOf(model) {
+  return runs.find((r) => modelOf(r.summary) === model)?.summary.model?.provider ?? model.split(":")[0];
+}
+
+/**
+ * Colour by provider, shaded by size: the provider's largest model (bigger
+ * family, then higher reasoning level) gets the full hue, and each smaller one
+ * is mixed further towards the surface, down to 30%.
+ */
+function providerShade(model) {
+  const provider = providerOf(model);
+  const hue = PROVIDER_COLORS[provider] ?? "var(--other)";
+  const size = (m) => { const i = FAMILY_SIZE.indexOf(familyOf(m).family); return i < 0 ? FAMILY_SIZE.length : i; };
+  const peers = models.filter((m) => providerOf(m) === provider)
+    .sort((a, b) => size(a) - size(b) || rankOf(familyOf(b).level) - rankOf(familyOf(a).level) || a.localeCompare(b));
+  const i = peers.indexOf(model);
+  const pct = peers.length > 1 ? Math.round(100 - (70 * i) / (peers.length - 1)) : 100;
+  return `color-mix(in oklab, ${hue} ${pct}%, var(--surface))`;
+}
+
+/** Difficulty levels easiest first; levels outside this list follow, sorted, then cases without one. */
+const DIFFICULTY_ORDER = ["easy", "medium", "hard"];
+
+/**
+ * Pass rate by difficulty: one small chart per level, each model's passed cases
+ * out of those it ran at that level, sorted by that pass rate (ties: more cases
+ * passed, then the overall order); models that ran none at the level go last.
+ */
+function renderDifficulty(view) {
+  const levelOf = (c) => c.difficulty ?? "unrated";
+  const rank = (l) => (DIFFICULTY_ORDER.includes(l) ? DIFFICULTY_ORDER.indexOf(l) : l === "unrated" ? Infinity : DIFFICULTY_ORDER.length);
+  const levels = [...new Set(view.flatMap((v) => v.cases.map(levelOf)))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  const providers = [...new Set(view.map((v) => providerOf(v.model)))].sort();
+  $("provider-legend").innerHTML = providers.map((p) =>
+    `<span class="item"><span class="sw" style="background:linear-gradient(90deg, color-mix(in oklab, ${PROVIDER_COLORS[p] ?? "var(--other)"} 30%, var(--surface)), ${PROVIDER_COLORS[p] ?? "var(--other)"})"></span>${esc(PROVIDER_NAMES[p] ?? p)}</span>`).join("") +
+    `<span class="item muted">pale → vivid: smaller → larger model</span>`;
+  // Re-rendering rebuilds the bars; keep a clicked model highlighted.
+  linkHighlight($("difficulty-charts"));
+  $("difficulty-charts").innerHTML = levels.map((l, i) => `<div class="card"><h3>${esc(l)}</h3><div class="chart" id="dc-${i}"></div></div>`).join("");
+  levels.forEach((l, i) => {
+    const stats = view.map((v) => {
+      const cs = v.cases.filter((c) => levelOf(c) === l);
+      const passed = cs.filter((c) => c.metrics?.exact_match === 1).length;
+      return { v, cs, passed, rate: cs.length ? passed / cs.length : null };
+    });
+    // Stable sort, so ties keep the overall order.
+    stats.sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1) || b.passed - a.passed);
+    hbars($(`dc-${i}`), stats.map(({ v, cs, passed, rate }) => {
+      const ci = wilson(passed, cs.length);
+      const t = tip(`${nameOf(v.model)} · ${l}`, [["Pass rate", fmt.pct(rate)], ["Passed", `${passed} of ${cs.length}`], ["95% CI", cs.length ? `${fmt.pct(ci.lo)} – ${fmt.pct(ci.hi)}` : "–"]],
+        cs.map((c) => `${c.metrics?.exact_match === 1 ? "✓" : "✕"} ${c.test}/${c.caseId}`).join(", "));
+      return {
+        key: v.model,
+        label: nameOf(v.model),
+        valueText: rate == null ? "– (none run)" : `${fmt.pct(rate)} · ${passed}/${cs.length}`,
+        segments: [{ value: rate ?? 0, color: providerShade(v.model), tip: t }],
+      };
+    }), { domainMax: 1, ticks: fmt.pct });
+  });
+  $("difficulty-charts")._applyHighlight();
+}
+
+/**
+ * Linked highlighting across the charts in `container`: hovering a row with a
+ * data-key highlights that key in every chart and dims the rest; a click keeps
+ * it until the same row is clicked again, empty space is clicked, or Escape.
+ */
+function linkHighlight(container) {
+  const apply = () => {
+    // A pinned model that a filter took out of the charts no longer counts.
+    const shown = (k) => k != null && [...container.querySelectorAll("[data-key]")].some((g) => g.dataset.key === k);
+    if (container.dataset.pinned != null && !shown(container.dataset.pinned)) delete container.dataset.pinned;
+    const key = shown(container.dataset.hover) ? container.dataset.hover : container.dataset.pinned;
+    container.classList.toggle("linked", key != null);
+    container.querySelectorAll("[data-key]").forEach((g) => g.classList.toggle("hl", g.dataset.key === key));
   };
-  group($("difficulty-heatmap"), (c) => [c.difficulty ?? "unrated"]);
-  group($("tag-heatmap"), (c) => c.tags ?? []);
+  container._applyHighlight = apply;
+  if (container.dataset.linked) return; // listeners already attached
+  container.dataset.linked = "1";
+  const keyAt = (e) => e.target.closest?.("[data-key]")?.dataset.key;
+  container.addEventListener("mouseover", (e) => {
+    const key = keyAt(e);
+    if (key == null) delete container.dataset.hover; else container.dataset.hover = key;
+    apply();
+  });
+  container.addEventListener("mouseleave", () => { delete container.dataset.hover; apply(); });
+  container.addEventListener("focusin", (e) => { const key = keyAt(e); if (key != null) { container.dataset.hover = key; apply(); } });
+  container.addEventListener("click", (e) => {
+    const key = keyAt(e);
+    if (key == null || container.dataset.pinned === key) delete container.dataset.pinned; else container.dataset.pinned = key;
+    apply();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && container.dataset.pinned != null) { delete container.dataset.pinned; apply(); }
+  });
 }
 
 // ---------- tooltip ----------
@@ -937,7 +1215,7 @@ function start(loaded, source) {
   // Grouped by family, the most capable level first.
   models = specs.sort((a, b) => {
     const [fa, fb] = [familyOf(a), familyOf(b)];
-    return families.indexOf(fa.family) - families.indexOf(fb.family) || LEVELS.indexOf(fb.level ?? "max") - LEVELS.indexOf(fa.level ?? "max");
+    return families.indexOf(fa.family) - families.indexOf(fb.family) || rankOf(fb.level) - rankOf(fa.level);
   });
   if (!runs.length) {
     $("source").textContent = `${source}: no results found.`;

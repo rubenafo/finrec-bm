@@ -14,6 +14,11 @@ export interface ModelProviderConfig {
    * whose catalog varies by account or region (e.g. Bedrock).
    */
   models?: readonly string[];
+  /**
+   * For a provider that accepts any ID: named models to list for selection
+   * (in knownModelSpecs, regexes and the default run) all the same.
+   */
+  listedModels?: readonly string[];
   /** Environment variable (normally set in .env) holding the API key. */
   apiKeyEnv?: string;
   /**
@@ -21,6 +26,11 @@ export interface ModelProviderConfig {
    * provider SDK has other credential sources (AWS chain, login profiles).
    */
   requiresApiKey?: boolean;
+  /**
+   * Whether the reported input tokens leave out cache reads and writes, as
+   * the Anthropic Messages API's `input_tokens` does; runAgent adds them back.
+   */
+  inputTokensExcludeCache?: boolean;
   /** max_tokens used when the caller doesn't set one. */
   defaultMaxTokens?: number;
   /** Creates the Strands model; `apiKey` is undefined when not set. */
@@ -28,6 +38,18 @@ export interface ModelProviderConfig {
     modelId: string,
     settings: { apiKey: string | undefined; maxTokens: number },
   ): Promise<Model<BaseModelConfig>>;
+}
+
+/** Models built by a provider whose input tokens leave out the cached ones; see reportsCacheApart. */
+const cacheApart = new WeakSet<object>();
+
+/**
+ * Whether a model's reported input tokens leave out cache reads and writes
+ * (built by a provider with inputTokensExcludeCache, e.g. Anthropic). Marked on
+ * the model itself, so it holds however the model reaches the agent.
+ */
+export function reportsCacheApart(model: object): boolean {
+  return cacheApart.has(model);
 }
 
 /**
@@ -53,8 +75,17 @@ export class ModelProvider {
     return this.config.models;
   }
 
+  /** The models listed for selection: the supported ones, or the named ones of a provider that accepts any ID. */
+  get listed(): readonly string[] {
+    return this.config.models ?? this.config.listedModels ?? [];
+  }
+
   get apiKeyEnv(): string | undefined {
     return this.config.apiKeyEnv;
+  }
+
+  get inputTokensExcludeCache(): boolean {
+    return this.config.inputTokensExcludeCache ?? false;
   }
 
   supports(modelId: string): boolean {
@@ -79,6 +110,8 @@ export class ModelProvider {
       throw new Error(`${this.label} needs an API key: set ${this.config.apiKeyEnv} in .env`);
     }
     const maxTokens = options.maxTokens ?? this.config.defaultMaxTokens ?? 16_000;
-    return this.config.create(modelId, { apiKey, maxTokens });
+    const model = await this.config.create(modelId, { apiKey, maxTokens });
+    if (this.inputTokensExcludeCache) cacheApart.add(model);
+    return model;
   }
 }

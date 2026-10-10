@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { loadEnv } from "../src/common/env.js";
-import { availableModelSpecs, createModel, deepseekModels, formatModelSpec, hasApiKey, knownModelSpecs, modelProviders, parseModelSpec, providers, resolveModelList, resolveModels } from "../src/common/model.js";
+import { anthropicModels, availableModelSpecs, createModel, deepseekModels, formatModelSpec, hasApiKey, knownModelSpecs, modelFamilies, modelProviders, openaiModels, parseModelSpec, providers, resolveModelList, resolveModels } from "../src/common/model.js";
+import { reportsCacheApart } from "../src/common/model-provider.js";
 import { matchNames } from "../src/common/pattern.js";
 
 const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "AWS_REGION"];
@@ -29,13 +30,19 @@ describe("model specs", () => {
     assert.deepEqual(parseModelSpec("bedrock:vendor.model-v1:0"), { provider: "bedrock", modelId: "vendor.model-v1:0" });
     assert.deepEqual(parseModelSpec("ds-v4p-reasoning-max"), { provider: "deepseek", modelId: "ds-v4p-reasoning-max" });
     assert.deepEqual(parseModelSpec("deepseek:ds-v4p-reasoning-max"), { provider: "deepseek", modelId: "ds-v4p-reasoning-max" });
+    assert.deepEqual(parseModelSpec("oa-luna-reasoning-xhigh"), { provider: "openai", modelId: "oa-luna-reasoning-xhigh" });
+    assert.deepEqual(parseModelSpec("openai:oa-sol-reasoning-low"), { provider: "openai", modelId: "oa-sol-reasoning-low" });
+    assert.deepEqual(parseModelSpec("at-haiku-max"), { provider: "anthropic", modelId: "at-haiku-max" });
+    assert.deepEqual(parseModelSpec("anthropic:at-sonnet-low"), { provider: "anthropic", modelId: "at-sonnet-low" });
   });
 
   it("defaults to every listed model whose API key is set", () => {
     assert.deepEqual(availableModelSpecs({}), []);
-    assert.deepEqual(availableModelSpecs({ DEEPSEEK_API_KEY: "k", OPENAI_API_KEY: "k" }), Object.keys(deepseekModels));
+    assert.deepEqual(availableModelSpecs({ DEEPSEEK_API_KEY: "k", OPENAI_API_KEY: "k" }), [...Object.keys(openaiModels), ...Object.keys(deepseekModels)]);
+    assert.deepEqual(availableModelSpecs({ OPENAI_API_KEY: "k" }), Object.keys(openaiModels), "OpenAI's named models");
+    const all = availableModelSpecs({ ANTHROPIC_API_KEY: "k", OPENAI_API_KEY: "k", DEEPSEEK_API_KEY: "k" });
+    assert.deepEqual(all, knownModelSpecs());
     const both = availableModelSpecs({ ANTHROPIC_API_KEY: "k", DEEPSEEK_API_KEY: "k" });
-    assert.deepEqual(both, knownModelSpecs());
     assert.ok(both.includes("anthropic:claude-opus-5") && both.includes("ds-flash-reasoning-off"));
     assert.deepEqual(availableModelSpecs({ ANTHROPIC_API_KEY: "", DEEPSEEK_API_KEY: "k" }).length, 8, "blank keys are unset");
   });
@@ -47,9 +54,12 @@ describe("model specs", () => {
     assert.equal(hasApiKey(parseModelSpec("bedrock:any-model"), {}), true, "Bedrock uses the AWS credential chain");
   });
 
-  it("formats DeepSeek models without the provider prefix", () => {
+  it("formats DeepSeek and named OpenAI and Anthropic models without the provider prefix", () => {
     assert.equal(formatModelSpec({ provider: "deepseek", modelId: "ds-flash-reasoning-off" }), "ds-flash-reasoning-off");
+    assert.equal(formatModelSpec({ provider: "openai", modelId: "oa-sol-reasoning-high" }), "oa-sol-reasoning-high");
+    assert.equal(formatModelSpec({ provider: "openai", modelId: "gpt-5" }), "openai:gpt-5");
     assert.equal(formatModelSpec({ provider: "anthropic", modelId: "claude-opus-5" }), "anthropic:claude-opus-5");
+    assert.equal(formatModelSpec({ provider: "anthropic", modelId: "at-sonnet-medium" }), "at-sonnet-medium");
   });
 
   it("rejects unknown providers, missing IDs and unsupported models", () => {
@@ -75,6 +85,28 @@ describe("model selection", () => {
     assert.deepEqual(ids("ds-.*-(high|max)$"), ["ds-flash-reasoning-high", "ds-flash-reasoning-max", "ds-v4p-reasoning-high", "ds-v4p-reasoning-max"]);
     assert.deepEqual(ids("anthropic:claude-opus-5"), ["anthropic:claude-opus-5"]);
     assert.deepEqual(ids("opus-5"), ["anthropic:claude-opus-5-5", "anthropic:claude-opus-5"]);
+  });
+
+  it("names oa-luna at five reasoning levels and oa-sol at four, selectable by family or regex", () => {
+    const luna = ["none", "low", "medium", "high", "xhigh"].map((l) => `oa-luna-reasoning-${l}`);
+    const sol = ["low", "medium", "high", "xhigh"].map((l) => `oa-sol-reasoning-${l}`);
+    assert.deepEqual(Object.keys(openaiModels), [...luna, ...sol]);
+    assert.deepEqual(modelFamilies["oa-luna"], luna);
+    assert.deepEqual(modelFamilies["oa-sol"], sol);
+    assert.deepEqual(ids("oa-luna"), luna);
+    assert.deepEqual(ids("oa-.*-xhigh"), ["oa-luna-reasoning-xhigh", "oa-sol-reasoning-xhigh"]);
+    assert.throws(() => parseModelSpec("oa-sol-reasoning-none"), /expected <provider>:<model id>/, "oa-sol has no none level");
+  });
+
+  it("names at-haiku and at-sonnet at four effort levels, selectable by family or regex", () => {
+    const haiku = ["low", "medium", "high", "max"].map((l) => `at-haiku-${l}`);
+    const sonnet = ["low", "medium", "high", "max"].map((l) => `at-sonnet-${l}`);
+    assert.deepEqual(Object.keys(anthropicModels), [...haiku, ...sonnet]);
+    assert.deepEqual(modelFamilies["at-haiku"], haiku);
+    assert.deepEqual(modelFamilies["at-sonnet"], sonnet);
+    assert.deepEqual(ids("at-sonnet"), sonnet);
+    assert.deepEqual(ids("at-.*-max"), ["at-haiku-max", "at-sonnet-max"]);
+    assert.throws(() => parseModelSpec("at-sonnet-xhigh"), /expected <provider>:<model id>/, "no xhigh level");
   });
 
   it("selects a family's models: ds-flash, ds-v4pro and its short form ds-v4p", () => {
@@ -184,7 +216,58 @@ describe("ModelProvider", () => {
     }
   });
 
+  it("maps named OpenAI models to gpt-6-luna or gpt-6.1-sol and the Responses API's reasoning effort", async () => {
+    process.env.OPENAI_API_KEY = "test";
+    for (const [name, { apiModel, reasoning }] of Object.entries(openaiModels)) {
+      const model = await createModel(name);
+      const config = model.getConfig() as { modelId: string; params?: unknown };
+      assert.equal(config.modelId, apiModel, name);
+      assert.equal(apiModel, name.startsWith("oa-luna-") ? "gpt-6-luna" : "gpt-6.1-sol");
+      assert.equal(reasoning, name.split("-").pop());
+      assert.deepEqual(config.params, { reasoning: { effort: reasoning } }, name);
+      assert.equal((model as unknown as { api: string }).api, "responses", name);
+    }
+    const plain = (await createModel("openai:gpt-5")).getConfig() as { modelId: string; params?: unknown };
+    assert.deepEqual([plain.modelId, plain.params], ["gpt-5", undefined], "other OpenAI IDs pass through unchanged");
+  });
+
+  it("maps named Anthropic models to claude-haiku-5-5 or claude-sonnet-5-5 and the effort level", async () => {
+    process.env.ANTHROPIC_API_KEY = "test";
+    for (const [name, { apiModel, effort }] of Object.entries(anthropicModels)) {
+      const config = (await createModel(name)).getConfig() as { modelId: string; params?: unknown };
+      assert.equal(config.modelId, apiModel, name);
+      assert.equal(apiModel, name.startsWith("at-haiku-") ? "claude-haiku-5-5" : "claude-sonnet-5-5");
+      assert.equal(effort, name.split("-").pop());
+      assert.deepEqual(config.params, { output_config: { effort } }, name);
+    }
+    const plain = (await createModel("anthropic:claude-opus-5")).getConfig() as { modelId: string; params?: unknown };
+    assert.deepEqual([plain.modelId, plain.params], ["claude-opus-5", undefined], "other Anthropic IDs pass through unchanged");
+  });
+
+  it("turns on prompt caching for every Anthropic model, whose input tokens leave out the cached ones", async () => {
+    process.env.ANTHROPIC_API_KEY = "test";
+    for (const spec of ["at-sonnet-high", "anthropic:claude-opus-5"]) {
+      assert.deepEqual(((await createModel(spec)).getConfig() as { cacheConfig?: unknown }).cacheConfig, { strategy: "auto" }, spec);
+    }
+    assert.equal(modelProviders.anthropic!.inputTokensExcludeCache, true);
+    assert.equal(modelProviders.openai!.inputTokensExcludeCache, false);
+    // Marked on the built model, which the benchmark hands to runAgent ready-made.
+    process.env.OPENAI_API_KEY = "test";
+    assert.equal(reportsCacheApart(await createModel("at-haiku-low")), true);
+    assert.equal(reportsCacheApart(await createModel("oa-luna-reasoning-low")), false);
+  });
+
+  it("gives every OpenAI model instance its own prompt cache key, and DeepSeek none", async () => {
+    Object.assign(process.env, { OPENAI_API_KEY: "test", DEEPSEEK_API_KEY: "test" });
+    const keyOf = async (spec: string) => ((await createModel(spec)).getConfig() as { cacheConfig?: { cacheKey?: string } }).cacheConfig?.cacheKey;
+    const [a, b, plain] = await Promise.all([keyOf("oa-sol-reasoning-high"), keyOf("oa-sol-reasoning-high"), keyOf("openai:gpt-5")]);
+    for (const key of [a, b, plain]) assert.match(key ?? "", /^finrec-[0-9a-f-]{36}$/);
+    assert.notEqual(a, b, "one key per case");
+    assert.equal(await keyOf("ds-flash-reasoning-high"), undefined);
+  });
+
   it("fails clearly when a required API key is missing", async () => {
+    await assert.rejects(createModel("oa-luna-reasoning-high"), /OpenAI needs an API key: set OPENAI_API_KEY in \.env/);
     await assert.rejects(createModel("ds-flash-reasoning-high"), /DeepSeek needs an API key: set DEEPSEEK_API_KEY in \.env/);
     await assert.rejects(createModel("openai:any-model"), /set OPENAI_API_KEY in \.env/);
     await assert.rejects(createModel("anthropic:claude-opus-5"), /set ANTHROPIC_API_KEY in \.env/);

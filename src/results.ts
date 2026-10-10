@@ -4,7 +4,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseModelSpec } from "./common/model.js";
+import { modelProviders, parseModelSpec } from "./common/model.js";
 import { caseIds, caseMeta, type CaseResult } from "./runner.js";
 import { buildModelSummary, buildResultsSummary, isoInCet, type ModelInfo, type ResultsSummary, type TestRun } from "./summary.js";
 
@@ -24,6 +24,19 @@ function modelInfo(spec: string): ModelInfo {
     const sep = spec.indexOf(":");
     return { spec, provider: sep > 0 ? spec.slice(0, sep) : "unknown", modelId: spec.slice(sep + 1) };
   }
+}
+
+/**
+ * Repairs a Claude result recorded while runAgent missed that the model's
+ * input tokens leave out the cached ones (fixed 2026-10-09): cache writes are
+ * there, but inputTokens is only the uncached part. A correct record always has
+ * inputTokens >= cached + written, so a smaller one gets them added back.
+ */
+export function repairUsage(result: CaseResult): CaseResult {
+  const u = result.usage;
+  if (u?.cacheWriteInputTokens === undefined || !modelProviders[modelInfo(result.model).provider]?.inputTokensExcludeCache) return result;
+  if (u.inputTokens >= u.cachedInputTokens + u.cacheWriteInputTokens) return result;
+  return { ...result, usage: { ...u, inputTokens: u.inputTokens + u.cachedInputTokens + u.cacheWriteInputTokens } };
 }
 
 export interface ModelResults {
@@ -56,7 +69,7 @@ export function loadResults(resultsDir: string, benchmarkDir: string): ModelResu
         if (typeof result.model !== "string" || modelFolder(result.model) !== folder) continue;
         spec = result.model;
         results.push({
-          ...result,
+          ...repairUsage(result),
           // Difficulty and tags describe the case, not the run: take today's meta.json, so retagging needs no rerun.
           ...caseMeta(join(benchmarkDir, test, "data", caseId)),
           finishedAt: result.finishedAt ?? isoInCet(statSync(file).mtime),
