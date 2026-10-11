@@ -71,7 +71,7 @@ export interface Activity {
   dbQueriesFailed: number;
 }
 
-const FILE_TOOLS = new Set(["read_text_file", "read_msg_file", "read_xls_file"]);
+const FILE_TOOLS = new Set(["read_text_file", "read_msg_file", "read_xls_file", "read_image_file"]);
 
 /**
  * The items of a call: its `queries` or `paths` list, or the single `sql` or

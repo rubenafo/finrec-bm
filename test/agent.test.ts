@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { DuckDBInstance } from "@duckdb/node-api";
-import { runAgent, toUsage } from "../src/common/agent.js";
+import { buildScreenshot } from "../scripts/screenshot-writer.js";
+import { runAgent, strandsLogger, toUsage } from "../src/common/agent.js";
 import { tools, type CaseContext } from "../src/tools/index.js";
 import { ScriptedModel } from "./helpers/scripted-model.js";
 
@@ -59,6 +60,29 @@ describe("runAgent", () => {
       ],
     );
     assert.deepEqual(run.usage, { inputTokens: 40, outputTokens: 20, cachedInputTokens: 24, cacheWriteInputTokens: 0 });
+  });
+
+  it("sends an image a tool returns to the model, after the tool's text", async () => {
+    const png = buildScreenshot({ sheet: { name: "s", rows: [["x"]] } });
+    writeFileSync(join(tmp, "evidence", "shot.png"), png);
+    const model = new ScriptedModel([{ tool: "read_image_file", input: { path: "evidence/shot.png" } }, { text: answer }]);
+    const run = await runAgent({ model, systemPrompt: "sys", prompt: "go", tools: allTools, ctx, maxTurns: 10 });
+
+    assert.deepEqual(run.toolCalls, [{ name: "read_image_file", input: { path: "evidence/shot.png" } }]);
+    const result = model.received[1]!.flatMap((m) => m.content).find((b) => b.type === "toolResultBlock");
+    assert.ok(result?.type === "toolResultBlock");
+    assert.deepEqual(result.content.map((c) => c.type), ["textBlock", "imageBlock"]);
+    const [text, image] = result.content;
+    assert.match(text?.type === "textBlock" ? text.text : "", /^evidence\/shot\.png: image file, PNG, \d+x\d+ pixels$/);
+    assert.ok(image?.type === "imageBlock" && image.format === "png" && image.source.type === "imageSourceBytes");
+    assert.ok(Buffer.from(image.source.bytes).equals(png));
+  });
+
+  it("keeps Strands' warnings, but for the one about moving a tool result's images to a user message", (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    strandsLogger.warn("tool_call_id=<call_01> | moving images from tool result to separate user message for openai compatibility");
+    strandsLogger.warn("something else");
+    assert.deepEqual(warn.mock.calls.map((c) => c.arguments), [["something else"]]);
   });
 
   it("counts cached tokens as part of the input, adding them back for providers that report them apart", () => {

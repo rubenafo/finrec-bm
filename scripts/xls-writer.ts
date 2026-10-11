@@ -2,10 +2,12 @@
 // a Compound File Binary container holding one Workbook stream. Covers what
 // case spreadsheets need: several sheets, text, numbers and dates, the
 // "#,##0.00" amount format, solid cell fills from the default palette, a bold
-// font, column widths, and simple formulas (numbers, cell references, + and -,
-// SUM over cells and ranges) stored with their calculated result.
+// font, column widths, simple formulas (numbers, cell references, + and -,
+// SUM over cells and ranges) stored with their calculated result, and PNG
+// pictures floating over a sheet, such as screenshots, each with a name.
 
 import CFB from "cfb";
+import { createHash } from "node:crypto";
 
 /** A solid cell fill, by its colour in Excel's default palette: yellow #FFFF00, grey #C0C0C0, tan #FFCC99, green #CCFFCC. */
 export type XlsFill = "yellow" | "grey" | "tan" | "green";
@@ -28,6 +30,22 @@ export interface XlsSheet {
   widths?: number[];
   /** Rows from row 1; each row's cells from column A. */
   rows: XlsCell[][];
+  /** Pictures over the sheet, in the order they are drawn. */
+  pictures?: XlsPicture[];
+}
+
+/** A PNG picture placed over a sheet, as Insert > Pictures places one. */
+export interface XlsPicture {
+  /** The picture's name, as Excel's Name Box and Selection Pane show it. */
+  name: string;
+  /** Path of the PNG file, relative to the case folder, e.g. evidence/screenshot.png. */
+  file: string;
+  /** The cell its top-left corner is on, e.g. H3. */
+  at: string;
+  /** Shown at this share of its size in pixels; default 1. */
+  scale?: number;
+  /** Alternative text. */
+  description?: string;
 }
 
 /** A workbook as stored in a case's xls-sources/<name>.json. */
@@ -163,8 +181,133 @@ function parseFormula(formula: string, where: string): Buffer {
   return out;
 }
 
-/** Builds the .xls file for a workbook. Output is deterministic. */
-export function buildXls(source: XlsSource): Buffer {
+/** Most bytes in one record's body; longer data goes on in CONTINUE records. */
+const MAX_RECORD = 8224;
+/** Pixels at Excel's default sizes for a workbook in Arial 10: column width 8.43, row height 12.75 pt. */
+const DEFAULT_COLUMN_PX = 64;
+const ROW_PX = 17;
+
+const u32 = (...values: number[]) => {
+  const b = Buffer.alloc(4 * values.length);
+  values.forEach((v, i) => b.writeUInt32LE(v >>> 0, 4 * i));
+  return b;
+};
+
+/** An OfficeArt record (MS-ODRAW 2.1.1): version and instance, type, length, then its body. */
+const art = (ver: number, inst: number, type: number, ...body: Buffer[]) => {
+  const data = Buffer.concat(body);
+  return Buffer.concat([u16(ver | (inst << 4), type), u32(data.length), data]);
+};
+
+/** A record whose body may be longer than MAX_RECORD: the rest goes in CONTINUE records. */
+function longRecord(type: number, body: Buffer): Buffer {
+  const parts = [record(type, body.subarray(0, MAX_RECORD))];
+  for (let at = MAX_RECORD; at < body.length; at += MAX_RECORD) parts.push(record(0x003c, body.subarray(at, at + MAX_RECORD)));
+  return Buffer.concat(parts);
+}
+
+/** A PNG's size in pixels, from its IHDR chunk. */
+function pngSize(png: Buffer, where: string): { width: number; height: number } {
+  if (png.length < 24 || !png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    throw new Error(`${where}: not a PNG file`);
+  }
+  return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
+}
+
+/** A sheet's pictures, with their image data loaded. */
+interface PlacedPicture extends XlsPicture {
+  png: Buffer;
+  /** 1-based index of its image in the drawing group's BLIP store. */
+  blip: number;
+}
+
+/**
+ * The OfficeArtClientAnchorSheet (MS-XLS 2.5.193) of a picture shown at its
+ * size in pixels from the top-left of cell `at`: the cells under its corners,
+ * with offsets in 1/1024 of a column's width and 1/256 of a row's height.
+ */
+function anchor(picture: PlacedPicture, columnPx: (col: number) => number, where: string): Buffer {
+  const m = picture.at.match(/^([A-Z]{1,3})([1-9]\d*)$/);
+  if (!m) throw new Error(`${where}: invalid cell "${picture.at}"`);
+  const col1 = [...m[1]!].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+  const row1 = Number(m[2]) - 1;
+  const { width, height } = pngSize(picture.png, where);
+  const scale = picture.scale ?? 1;
+  let col2 = col1;
+  let left = Math.round(width * scale);
+  while (left >= columnPx(col2)) left -= columnPx(col2++);
+  let row2 = row1;
+  let down = Math.round(height * scale);
+  while (down >= ROW_PX) {
+    down -= ROW_PX;
+    row2++;
+  }
+  return u16(0, col1, 0, row1, 0, col2, Math.floor((left * 1024) / columnPx(col2)), row2, Math.floor((down * 256) / ROW_PX));
+}
+
+/**
+ * A sheet's drawing: MSODRAWING records holding its OfficeArtDgContainer
+ * (MS-ODRAW 2.2.13), with an OBJ record (MS-XLS 2.4.181) after each picture's
+ * shape, as Excel writes them. The first record opens the drawing and its
+ * group shape; each picture is one shape, with its name, its image in the
+ * BLIP store, no border, and its anchor.
+ */
+function drawing(dgId: number, pictures: PlacedPicture[], columnPx: (col: number) => number, sheetName: string): Buffer {
+  const base = dgId * 1024;
+  const shapes = pictures.map((p, i) => {
+    const where = `${sheetName}: picture "${p.name}"`;
+    const complex = [p.name, p.description].map((s) => (s === undefined ? undefined : Buffer.from(`${s}\0`, "utf16le")));
+    // Properties by ID: pib (with fBid, an index into the BLIP store), line style (no line), then name and description (complex: their text follows).
+    const props: [number, number][] = [[0x4104, p.blip], [0x01ff, 0x00080000], [0x8380, complex[0]!.length]];
+    if (complex[1]) props.push([0x8381, complex[1].length]);
+    const opt = art(3, props.length, 0xf00b, ...props.map(([id, value]) => Buffer.concat([u16(id), u32(value)])), ...complex.filter((c) => c !== undefined));
+    return art(
+      0xf, 0, 0xf004,
+      art(2, 75, 0xf00a, u32(base + i + 1, 0x0a00)), // FSP: a picture frame, with an anchor and a shape type
+      opt,
+      art(0, 0, 0xf010, anchor(p, columnPx, where)),
+      art(0, 0, 0xf011),
+    );
+  });
+  const group = art(0xf, 0, 0xf004, art(1, 0, 0xf009, Buffer.alloc(16)), art(2, 0, 0xf00a, u32(base, 0x5))); // the group shape, fGroup | fPatriarch
+  const shapesLength = group.length + shapes.reduce((n, s) => n + s.length, 0);
+  const fdg = art(0, dgId, 0xf008, u32(pictures.length + 1, base + pictures.length));
+  // Container headers count every shape, though the shapes after the first come in later records.
+  const head = Buffer.concat([
+    u16(0x000f, 0xf002), u32(fdg.length + 8 + shapesLength), fdg,
+    u16(0x000f, 0xf003), u32(shapesLength), group,
+  ]);
+  return Buffer.concat(
+    shapes.flatMap((shape, i) => {
+      // OBJ: a picture (ot 8) with ID i + 1, locked and printed; any picture format; then the end.
+      const obj = Buffer.concat([u16(0x15, 0x12, 0x08, i + 1, 0x6011), Buffer.alloc(12), u16(0x07, 0x02, 0xffff), u16(0x08, 0x02, 0x0001), u16(0, 0)]);
+      return [record(0x00ec, i === 0 ? Buffer.concat([head, shape]) : shape), record(0x005d, obj)];
+    }),
+  );
+}
+
+/**
+ * The workbook's MSODRAWINGGROUP (MS-XLS 2.4.170): an OfficeArtDggContainer
+ * with the drawings' shape ID clusters and the BLIP store, each picture's PNG
+ * in an OfficeArtFBSE identified by its MD5.
+ */
+function drawingGroup(drawings: number[], pngs: Buffer[]): Buffer {
+  const shapes = drawings.reduce((n, count) => n + count + 1, 0);
+  const lastSpid = drawings.length * 1024 + drawings[drawings.length - 1]!;
+  const dgg = art(0, 0, 0xf006, u32(lastSpid + 1, drawings.length + 1, shapes, drawings.length), ...drawings.map((count, i) => u32(i + 1, count + 1)));
+  const store = pngs.map((png) => {
+    const uid = createHash("md5").update(png).digest();
+    const blip = art(0, 0x6e0, 0xf01e, uid, Buffer.from([0xff]), png); // OfficeArtBlipPNG
+    return art(2, 6, 0xf007, Buffer.from([6, 6]), uid, u16(0xff), u32(blip.length, 1, 0), Buffer.alloc(4), blip); // OfficeArtFBSE: PNG on Windows and Mac, one reference
+  });
+  return longRecord(0x00eb, art(0xf, 0, 0xf000, dgg, art(0xf, pngs.length, 0xf001, ...store)));
+}
+
+/**
+ * Builds the .xls file for a workbook. Output is deterministic. `load` reads
+ * a picture's file, given its `file` path; it is needed only for pictures.
+ */
+export function buildXls(source: XlsSource, load?: (file: string) => Buffer): Buffer {
   if (source.sheets.length === 0) throw new Error("a workbook needs at least one sheet");
 
   // Cell XFs, one per distinct (format, font, fill); 0-14 are style XFs and 15 the default cell XF.
@@ -174,11 +317,28 @@ export function buildXls(source: XlsSource): Buffer {
     if (i < 0) i = cellXfs.push({ fmt, font, fill }) - 1;
     return 16 + i;
   };
+  // Every picture's PNG, in BLIP store order, and the picture count of each sheet that has a drawing.
+  const pngs: Buffer[] = [];
+  const drawings: number[] = [];
 
   const sheetStreams = source.sheets.map((sheet, sheetNo) => {
     if (sheet.name.length === 0 || sheet.name.length > 31 || /[[\]:*?/\\]/.test(sheet.name)) {
       throw new Error(`invalid sheet name "${sheet.name}"`);
     }
+    const pictures = (sheet.pictures ?? []).map((p): PlacedPicture => {
+      if (!load) throw new Error(`${sheet.name}: picture "${p.name}": no way to read picture files was given`);
+      if (p.name.trim() === "") throw new Error(`${sheet.name}: a picture needs a name`);
+      const png = load(p.file);
+      pngSize(png, `${sheet.name}: picture "${p.name}"`);
+      return { ...p, png, blip: pngs.push(png) };
+    });
+    if (new Set(pictures.map((p) => p.name.toLowerCase())).size !== pictures.length) throw new Error(`${sheet.name}: two pictures have the same name`);
+    // A column's width in pixels as Excel shows it, from the width COLINFO stores.
+    const columnPx = (c: number) => {
+      const w = sheet.widths?.[c];
+      return w === undefined ? DEFAULT_COLUMN_PX : Math.trunc(((Math.round(w * 256) + 18) / 256) * 7);
+    };
+    const objects = pictures.length === 0 ? [] : [drawing(drawings.push(pictures.length), pictures, columnPx, sheet.name)];
     const cells: Buffer[] = [];
     let lastCol = 0;
     sheet.rows.forEach((row, r) => {
@@ -218,7 +378,7 @@ export function buildXls(source: XlsSource): Buffer {
     const widths = (sheet.widths ?? []).map((w, c) => record(0x007d, u16(c, c, Math.round(w * 256), 15, 0, 0))); // COLINFO
     // WINDOW2: gridlines, headers, zeros, outline symbols; the first sheet is selected and shown.
     const window2 = record(0x023e, Buffer.concat([u16(sheetNo === 0 ? 0x06b6 : 0x00b6, 0, 0, 0x40, 0, 0, 0), Buffer.alloc(4)]));
-    return Buffer.concat([bof(0x0010), ...widths, record(0x0200, dimensions), ...cells, window2, record(0x000a, Buffer.alloc(0))]);
+    return Buffer.concat([bof(0x0010), ...widths, record(0x0200, dimensions), ...cells, ...objects, window2, record(0x000a, Buffer.alloc(0))]);
   });
 
   const formats = [record(0x041e, Buffer.concat([u16(FMT_DATE), unicodeString(DATE_FORMAT)]))];
@@ -243,13 +403,14 @@ export function buildXls(source: XlsSource): Buffer {
   ]);
   // BOUNDSHEET records point at each sheet's BOF, so their size fixes where the sheets start.
   const boundsheets = source.sheets.map((sheet) => Buffer.concat([Buffer.alloc(4), u16(0), shortString(sheet.name)]));
+  const group = drawings.length === 0 ? Buffer.alloc(0) : drawingGroup(drawings, pngs);
   const eof = record(0x000a, Buffer.alloc(0));
-  let offset = globalsHead.length + boundsheets.reduce((n, b) => n + 4 + b.length, 0) + eof.length;
+  let offset = globalsHead.length + boundsheets.reduce((n, b) => n + 4 + b.length, 0) + group.length + eof.length;
   for (const [i, body] of boundsheets.entries()) {
     body.writeUInt32LE(offset, 0);
     offset += sheetStreams[i]!.length;
   }
-  let workbook = Buffer.concat([globalsHead, ...boundsheets.map((b) => record(0x0085, b)), eof, ...sheetStreams]);
+  let workbook = Buffer.concat([globalsHead, ...boundsheets.map((b) => record(0x0085, b)), group, eof, ...sheetStreams]);
   if (workbook.length < MIN_STREAM) workbook = Buffer.concat([workbook, Buffer.alloc(MIN_STREAM - workbook.length)]);
 
   const cfb = CFB.utils.cfb_new();

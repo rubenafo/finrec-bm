@@ -28,8 +28,8 @@ const summary = buildModelSummary({ spec: "deepseek:deepseek-flash", provider: "
     {
       test: "txt-matching",
       results: [
-        caseResult("case-0001", {}),
-        caseResult("case-0002", {
+        caseResult("case-01", {}),
+        caseResult("case-02", {
           difficulty: "hard",
           metrics: { exact_match: 0, id_recall: 0.5 },
           turns: 11,
@@ -61,8 +61,8 @@ describe("buildModelSummary", () => {
   it("aggregates each test: passed and failed cases, metrics, turns, activity and usage", () => {
     const test = summary.tests[0]!;
     assert.equal(test.cases, 2);
-    assert.equal(test.passed, 1, "case-0001 is an exact match");
-    assert.equal(test.failed, 1, "case-0002 hit the turn limit");
+    assert.equal(test.passed, 1, "case-01 is an exact match");
+    assert.equal(test.failed, 1, "case-02 hit the turn limit");
     assert.equal(test.errors, 1);
     assert.deepEqual(test.metrics, { exact_match: 0.5, id_recall: 0.75 });
     assert.deepEqual(test.turns, { total: 16, mean: 8, min: 5, max: 11 });
@@ -72,14 +72,14 @@ describe("buildModelSummary", () => {
       perCase: { filesChecked: 1.5, dbQueries: 4, dbQueriesSucceeded: 3, dbQueriesFailed: 1 },
     });
     assert.deepEqual(test.usage, { inputTokens: 28000, outputTokens: 2800, cachedInputTokens: 0, cacheWriteInputTokens: 0 });
-    // deepseek-flash: case-0001 finished off-peak (05:51 UTC), case-0002 at peak (06:55 UTC, a Friday).
+    // deepseek-flash: case-01 finished off-peak (05:51 UTC), case-02 at peak (06:55 UTC, a Friday).
     assert.equal(test.costUsd, 0.01008);
   });
 
   it("keeps one row per case with everything a dashboard needs", () => {
     const [first, second] = summary.tests[0]!.caseResults;
     assert.deepEqual(first, {
-      caseId: "case-0001",
+      caseId: "case-01",
       difficulty: "easy",
       tags: ["files-only"],
       metrics: { exact_match: 1, id_recall: 1 },

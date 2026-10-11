@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ToolError, tools, type CaseContext } from "../src/tools/index.js";
+import { outputText, ToolError, tools, type CaseContext } from "../src/tools/index.js";
 
 // calculate touches no case data, so it needs no real context.
 const ctx = {} as CaseContext;
 
 type Result = { expression: string; name?: string; value: string; exact: boolean };
 const calc = async (...expressions: string[]): Promise<Result[]> =>
-  JSON.parse(await tools.calculate!.run({ expressions }, ctx)).results;
+  JSON.parse(outputText(await tools.calculate!.run({ expressions }, ctx))).results;
 /** The value of the last expression. */
 const value = async (...expressions: string[]) => (await calc(...expressions)).at(-1)!.value;
 
@@ -119,22 +119,22 @@ describe("calculate", () => {
  */
 describe("calculate covers the arithmetic of every case", () => {
   const cases: [string, string[], string][] = [
-    ["csv-matching case-0001: a sum", ["sum(412300, 538120.50, 297480.25, 263615.75)"], "1511516.50"],
-    ["csv-matching case-0002: reversal, invoice and days x rate", ["22425.00 - 20700.00 + 17.0 * 1250"], "22975.00"],
-    ["csv-matching case-0003: a sum", ["sum(213750.50, 98400.00, 172600.25, 74150.00, 241200.00, 56980.75)"], "857081.50"],
+    ["csv-matching case-01: a sum", ["sum(412300, 538120.50, 297480.25, 263615.75)"], "1511516.50"],
+    ["csv-matching case-02: reversal, invoice and days x rate", ["22425.00 - 20700.00 + 17.0 * 1250"], "22975.00"],
+    ["csv-matching case-03: a sum", ["sum(213750.50, 98400.00, 172600.25, 74150.00, 241200.00, 56980.75)"], "857081.50"],
     [
-      "csv-matching case-0004: running balance, then EOM translation to cents",
+      "csv-matching case-04: running balance, then EOM translation to cents",
       ["eur = 2014750.50 + 318400.25 - 146270.00 + 220155.75 - 185.40 - 400000.00 + 173300.00 - 69482.50", "round(eur * 1.1317, 2)"],
       "2388643.65",
     ],
     [
-      "csv-matching case-0005: VAT removed per invoice",
+      "csv-matching case-05: VAT removed per invoice",
       ["sum(round(28053.85 / (1 + 21%), 2), round(15750.00 / (1 + 0%), 2), round(11462.33 / (1 + 21%), 2))"],
       "48408.00",
     ],
-    ["csv-matching case-0006: FTE share, rounded to cents", ["round(sum(192750.40, 188400.25, 201125.75) * 29.0 / 113.0, 2)"], "149433.77"],
+    ["csv-matching case-06: FTE share, rounded to cents", ["round(sum(192750.40, 188400.25, 201125.75) * 29.0 / 113.0, 2)"], "149433.77"],
     [
-      "csv-matching case-0007: AVG conversion, rounded once to thousands",
+      "csv-matching case-07: AVG conversion, rounded once to thousands",
       [
         "usd = sum(212345.60 * 1.1131, 384579.20 * 1.1131, 64382.50 * 1.2803, 156499.00, 118260.40 * 1.2856, " +
           "74621.80 * 1.1187, 265194.40 * 1.1248, 87512.30, 43476.60 * 1.2838)",
@@ -144,7 +144,7 @@ describe("calculate covers the arithmetic of every case", () => {
       "1580",
     ],
     [
-      "csv-matching case-0008: consolidation at AVG rates",
+      "csv-matching case-08: consolidation at AVG rates",
       [
         "round(sum(4215300, 1184250 * 1.2614, 932480.50 * 1.0862, 1876940.25, 1407615 * 1.0889, 3962118.40, " +
           "845300.75 * 1.2667, 1120060 * 1.0897, -612500, -96400 * 1.2667), 2)",
@@ -152,21 +152,21 @@ describe("calculate covers the arithmetic of every case", () => {
       "15650445.85",
     ],
     [
-      "csv-matching case-0009: positive flows minus liabilities",
+      "csv-matching case-09: positive flows minus liabilities",
       ["sum(18400.00, 30000.00, 1240.75, 4200.00) - sum(18400.00, 22750.50, 350.00, 9815.20)"],
       "2525.05",
     ],
-    ["txt-matching case-0001: Coho Vineyard", ["1111250.00 + 3402118.40"], "4513368.40"],
-    ["txt-matching case-0001: Adventure Works in millions", ["round(4872315.60 / 1e6, 1)"], "4.9"],
+    ["txt-matching case-01: Coho Vineyard", ["1111250.00 + 3402118.40"], "4513368.40"],
+    ["txt-matching case-01: Adventure Works in millions", ["round(4872315.60 / 1e6, 1)"], "4.9"],
     [
-      "txt-matching case-0002: monthly EUR/USD rates",
+      "txt-matching case-02: monthly EUR/USD rates",
       ["round(1284600.00 * 1.1612 + 642310.55 + 2105480.30 * 1.1734 + 2650000.00 * 1.1689 + 318940.20, 2)"],
       "8021083.85",
     ],
-    ["xls-matching case-0001: Fabrikam Industrial in Q2", ["sum(8240.00, 15600.00, 9875.25, 22740.25)"], "56455.50"],
-    ["xls-matching case-0002: two hexadecimal figures", ["0x5D62 + 0x4530"], "41618"],
+    ["xls-matching case-01: Fabrikam Industrial in Q2", ["sum(8240.00, 15600.00, 9875.25, 22740.25)"], "56455.50"],
+    ["xls-matching case-02: two hexadecimal figures", ["0x5D62 + 0x4530"], "41618"],
     [
-      "xls-matching case-0003: the ledger's eight August payments, not the sheet's nine rows",
+      "xls-matching case-03: the ledger's eight August payments, not the sheet's nine rows",
       ["sum(3420.00, 1275.90, 12600.00, 4812.60, 8940.00, 15300.00, 2189.50, 10599.80)"],
       "59137.80",
     ],
@@ -175,7 +175,7 @@ describe("calculate covers the arithmetic of every case", () => {
     it(title, async () => assert.equal(await value(...expressions), expected));
   }
 
-  it("csv-matching case-0007: the unrounded total and the total in cents", async () => {
+  it("csv-matching case-07: the unrounded total and the total in cents", async () => {
     const [usd, cents] = await calc(
       "usd = sum(212345.60 * 1.1131, 384579.20 * 1.1131, 64382.50 * 1.2803, 156499.00, 118260.40 * 1.2856, " +
         "74621.80 * 1.1187, 265194.40 * 1.1248, 87512.30, 43476.60 * 1.2838)",

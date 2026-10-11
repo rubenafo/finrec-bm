@@ -73,10 +73,6 @@
   .chart { width: 100%; }
   .chart svg { display: block; overflow: visible; }
   /* Cost table: a family's subtotal row and the grand total stand out from the level rows. */
-  #cost-table tr.sub td { font-weight: 600; background: var(--hover); }
-  #cost-table tr.total td { font-weight: 700; border-top: 2px solid var(--axis); }
-  #cost-table td.indent { padding-left: 24px; }
-  #cost-table .api { color: var(--muted); font-weight: 400; margin-left: 6px; }
   /* Linked highlight: one entity lit across charts, the rest dimmed. */
   .linked [data-key] { transition: opacity 120ms; }
   .linked [data-key]:not(.hl) { opacity: 0.25; }
@@ -173,12 +169,6 @@
     <div class="tiles" id="tiles"></div>
 
     <section>
-      <h2>Cost of the tests</h2>
-      <p class="note" id="cost-note"></p>
-      <div class="card scroll"><table id="cost-table"></table></div>
-    </section>
-
-    <section>
       <h2>Score against cost</h2>
       <div class="grid">
         <div class="card"><h3 id="scatter-tokens-title"></h3><div class="chart" id="scatter-tokens"></div></div>
@@ -225,16 +215,16 @@
     </section>
 
     <section>
-      <h2>Scores by metric</h2>
-      <p class="note">One chart per metric, so each model's bar keeps its colour across charts.</p>
-      <div class="grid g3" id="metric-charts"></div>
-    </section>
-
-    <section>
       <h2>Pass rate by difficulty</h2>
       <p class="note">One chart per difficulty level from the cases' meta.json, each sorted by its own pass rate, best first. Bars are coloured by provider, most vivid for the largest model (bigger model, then higher reasoning level) and paler for smaller ones. Each bar shows the pass rate and passed out of run; with only a case or two at a level, read it as a hint, not a ranking.</p>
       <div class="legend" id="provider-legend"></div>
       <div class="grid g3" id="difficulty-charts"></div>
+    </section>
+
+    <section>
+      <h2>Pass rate by tag</h2>
+      <p class="note">One chart per tag from the cases' meta.json: first the skills a case tests, then where its evidence lives. A case counts in every chart of its tags. Sorted, coloured and labelled like the difficulty charts; hover a bar for the cases behind it.</p>
+      <div class="grid g3" id="tag-charts"></div>
     </section>
 
     <section>
@@ -314,7 +304,7 @@ function tip(title, rows = [], text) {
 let runs = [];        // [{ folder, summary }], one per model
 let models = [];      // model specs, grouped by family, most capable first; index = colour slot
 let families = [];    // model families, sorted
-const state = { test: "__all", metric: null, sort: { key: null, dir: -1 }, headSort: { key: null, dir: 1 }, costSort: { key: null, dir: -1 } };
+const state = { test: "__all", metric: null, sort: { key: null, dir: -1 }, headSort: { key: null, dir: 1 } };
 
 const modelOf = (s) => s.model?.spec ?? `${s.model?.provider}:${s.model?.modelId}`;
 const startOf = (s) => s.updatedAt ?? "";
@@ -608,9 +598,14 @@ function scatter(el, points, { xFmt = fmt.num, yFmt = fmt.score, yMax = 1, xLabe
     s += `<polyline points="${frontier.map((p) => `${x(p.x)},${y(p.y)}`).join(" ")}" fill="none" stroke="var(--muted)" stroke-width="1.5"/>`;
   }
   // Labels: each tries the spots right beside its dot first, avoiding every dot and the labels
-  // already placed; a label that has to move further away gets a leader line in the model's colour.
+  // already placed, and only where the label is closer to its own dot than to any other, so it
+  // can't be read as another model's. A label that has to move further away gets a dotted line
+  // to its dot.
   const LH = 14; // label box height
   const dots = points.map((p) => ({ cx: x(p.x), cy: y(p.y) }));
+  // Distance from a label box to a dot's centre: 0 inside the box.
+  const gap = (b, d) => Math.hypot(Math.max(b.left - d.cx, 0, d.cx - b.right), Math.max(b.top - d.cy, 0, d.cy - b.bottom));
+  const nearestIsOwn = (b, own) => dots.every((d) => d === own || gap(b, d) > gap(b, own));
   const boxes = [];
   const overlaps = (b) =>
     b.left < m.l || b.right > W - m.r || b.top < m.t || b.bottom > H - m.b ||
@@ -620,6 +615,7 @@ function scatter(el, points, { xFmt = fmt.num, yFmt = fmt.score, yMax = 1, xLabe
   const labels = [];
   // Place labels in crowded areas first, so they get the spots closest to their dots.
   const crowd = (p) => dots.filter((d) => Math.hypot(d.cx - x(p.x), d.cy - y(p.y)) < 60).length;
+  const dotOf = new Map(points.map((p, i) => [p, dots[i]]));
   for (const p of [...points].sort((a, b) => crowd(b) - crowd(a) || b.y - a.y || a.x - b.x)) {
     const px = x(p.x), py = y(p.y);
     const w = textWidth(p.label);
@@ -629,24 +625,26 @@ function scatter(el, points, { xFmt = fmt.num, yFmt = fmt.score, yMax = 1, xLabe
       boxAt(px + 6, py - 6 - LH, w), boxAt(px + 6, py + 6, w),
       boxAt(px - 6 - w, py - 6 - LH, w), boxAt(px - 6 - w, py + 6, w),
     ];
-    let box = near.find((b) => !overlaps(b)), leader = false;
-    // Nothing free next to the dot: search outward, nearest spot first.
-    for (let r = 1; !box && r <= 24; r++) {
-      const dy = r * (LH + 2);
-      box = [
+    // Spots further out, nearest first.
+    const further = Array.from({ length: 24 }, (_, r) => {
+      const dy = (r + 1) * (LH + 2);
+      return [
         boxAt(px + 14, py - LH / 2 - dy, w), boxAt(px + 14, py - LH / 2 + dy, w),
         boxAt(px - 14 - w, py - LH / 2 - dy, w), boxAt(px - 14 - w, py - LH / 2 + dy, w),
         boxAt(px - w / 2, py - 9 - LH - dy, w), boxAt(px - w / 2, py + 9 + dy, w),
-      ].find((b) => !overlaps(b));
-      leader = !!box;
-    }
-    box ??= near[0];
+      ];
+    }).flat();
+    const free = (b) => !overlaps(b) && nearestIsOwn(b, dotOf.get(p));
+    // Beside the dot if a spot there is free and nearest to it; else the nearest such spot further
+    // out; else, as a last resort, any free spot, which the dotted line still ties to the dot.
+    let box = near.find(free), leader = !box;
+    box ??= further.find(free) ?? further.find((b) => !overlaps(b)) ?? near[0];
     boxes.push(box);
     if (leader) {
-      // Line from the dot's edge to the nearest point on the label box.
+      // Dotted line from the dot's edge to the nearest point on the label box.
       const tx = Math.max(box.left, Math.min(px, box.right)), ty = Math.max(box.top, Math.min(py, box.bottom));
       const d = Math.hypot(tx - px, ty - py) || 1;
-      labels.push(`<line x1="${px + ((tx - px) / d) * 6}" y1="${py + ((ty - py) / d) * 6}" x2="${tx}" y2="${ty}" stroke="${p.color}" stroke-width="1"/>`);
+      labels.push(`<line x1="${px + ((tx - px) / d) * 6}" y1="${py + ((ty - py) / d) * 6}" x2="${tx}" y2="${ty}" stroke="var(--ink-2)" stroke-width="1" stroke-dasharray="1 2.5" stroke-linecap="round"/>`);
     }
     labels.push(`<text class="ink" x="${box.left}" y="${box.bottom - 3}">${esc(p.label)}</text>`);
   }
@@ -711,7 +709,6 @@ function render() {
   }).join("");
 
   renderTiles(view);
-  renderCostTable(view);
   renderHeadline(view);
   renderCards(view, metrics, metric);
   renderLeaderboard(view, metrics);
@@ -727,17 +724,8 @@ function render() {
   }), { domainMax: 1, ticks: fmt.pct });
   $("outcomes-legend").innerHTML = outcomeLegend();
 
-  // Scores by metric: one small chart per metric, models by pass rate like every chart.
-  $("metric-charts").innerHTML = metrics.map((m, i) => `<div class="card"><h3>${esc(label(m))}</h3><div class="chart" id="mc-${i}"></div></div>`).join("");
-  metrics.forEach((m, i) => {
-    hbars($(`mc-${i}`), view.map((v) => ({
-      label: nameOf(v.model),
-      valueText: v.agg.metrics[m] == null ? "– (test not run)" : fmt.score(v.agg.metrics[m]),
-      segments: [{ value: v.agg.metrics[m] ?? 0, color: colorOf(v.model), tip: tip(nameOf(v.model), [[label(m), fmt.score(v.agg.metrics[m])], ["Cases", v.agg.n]]) }],
-    })), { domainMax: 1, ticks: fmt.score });
-  });
-
   renderDifficulty(view);
+  renderTags(view);
 
   // Score against cost.
   $("scatter-tokens-title").textContent = `${label(metric ?? "")} against agent tokens per case (line: efficiency frontier)`;
@@ -913,105 +901,6 @@ function renderTiles(view) {
   $("tiles").innerHTML = tiles.map(([k, v, d]) => `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="d">${esc(d)}</div></div>`).join("");
 }
 
-/** The API model behind each family, shown next to its name in the cost table. */
-const FAMILY_API = {
-  "at-sonnet": "claude-sonnet-5-5", "at-haiku": "claude-haiku-5-5",
-  "oa-sol": "gpt-6.1-sol", "oa-luna": "gpt-6-luna",
-  "ds-v4p": "deepseek-v4-pro", "ds-flash": "deepseek-flash",
-};
-
-/**
- * Cost of the tests: per model family and reasoning level, the cases run, the
- * requests (model calls) they made, their tokens and what those cost at list
- * prices (costUsd from summary.json), with a subtotal per family and a total.
- */
-function renderCostTable(view) {
-  const totals = (cases) => {
-    const usages = cases.map((c) => c.usage ?? {});
-    const priced = cases.filter((c) => typeof c.costUsd === "number");
-    const requests = sum(cases.map((c) => c.turns ?? 0));
-    const cost = priced.length === cases.length && cases.length ? sum(priced.map((c) => c.costUsd)) : null;
-    return {
-      cases: cases.length, requests, cost, priced: priced.length,
-      input: sum(usages.map((u) => u.inputTokens ?? 0)),
-      cached: sum(usages.map((u) => u.cachedInputTokens ?? 0)),
-      written: sum(usages.map((u) => u.cacheWriteInputTokens ?? 0)),
-      output: sum(usages.map((u) => u.outputTokens ?? 0)),
-    };
-  };
-  const cells = (t) => {
-    const missing = t.cases - t.priced;
-    const costTip = missing ? tip("No total cost", [["Cases with a cost", `${t.priced} of ${t.cases}`]], "No known price, or Claude cases recorded before cache writes were counted: rerun them.") : null;
-    const costCell = (v) => (costTip ? `<td class="num" tabindex="0" data-tip="${costTip}">–</td>` : `<td class="num">${fmt.usd(v)}</td>`);
-    return `<td class="num">${fmt.int(t.cases)}</td><td class="num">${fmt.int(t.requests)}</td>` +
-      `<td class="num">${fmt.tokens(t.input)}</td><td class="num">${fmt.tokens(t.cached)}</td><td class="num">${fmt.tokens(t.written)}</td><td class="num">${fmt.tokens(t.output)}</td>` +
-      costCell(t.cost) + costCell(t.cost != null && t.cases ? t.cost / t.cases : null) + costCell(t.cost != null && t.requests ? t.cost / t.requests : null);
-  };
-  // Families in the models' order (grouped by family, most capable level first).
-  const byFamily = new Map();
-  for (const model of models) {
-    const v = view.find((x) => x.model === model);
-    if (!v) continue;
-    const { family } = familyOf(model);
-    if (!byFamily.has(family)) byFamily.set(family, []);
-    byFamily.get(family).push(v);
-  }
-  // Sortable columns; `get` reads a model row: { v, t } with t its totals.
-  const levelOf = (r) => familyOf(r.v.model).level;
-  const cols = [
-    { key: "model", name: "Model", get: (r) => r.v.model },
-    { key: "level", name: "Reasoning", get: (r) => (levelOf(r) == null ? null : rankOf(levelOf(r))) },
-    { key: "cases", name: "Cases", num: true, get: (r) => r.t.cases },
-    { key: "requests", name: "Requests", num: true, get: (r) => r.t.requests },
-    { key: "input", name: "Input tokens", num: true, get: (r) => r.t.input },
-    { key: "cached", name: "Cached input", num: true, get: (r) => r.t.cached },
-    { key: "written", name: "Cache writes", num: true, get: (r) => r.t.written },
-    { key: "output", name: "Output tokens", num: true, get: (r) => r.t.output },
-    { key: "cost", name: "Cost", num: true, get: (r) => r.t.cost },
-    { key: "perCase", name: "Cost / case", num: true, get: (r) => (r.t.cost != null && r.t.cases ? r.t.cost / r.t.cases : null) },
-    { key: "perRequest", name: "Cost / request", num: true, get: (r) => (r.t.cost != null && r.t.requests ? r.t.cost / r.t.requests : null) },
-  ];
-  const modelRow = (v, cls = "") => `<tr><td${cls ? ` class="${cls}"` : ""}>${modelTag(v.model)}</td><td>${esc(familyOf(v.model).level ?? "–")}</td>${cells(totals(v.cases))}</tr>`;
-  const { key: sortKey, dir } = state.costSort;
-  const col = cols.find((c) => c.key === sortKey && c.key !== "model");
-  let rows = "";
-  if (col) {
-    // Sorted: one flat list of models, so they compare across families; missing values last.
-    const list = [...byFamily.values()].flat().map((v) => ({ v, t: totals(v.cases) }));
-    list.sort((a, b) => {
-      const x = col.get(a), y = col.get(b);
-      if (x == null || y == null) return (x == null) - (y == null);
-      return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * dir;
-    });
-    rows = list.map(({ v }) => modelRow(v)).join("");
-  } else {
-    // Default: grouped by family, with a subtotal row each.
-    for (const [family, vs] of byFamily) {
-      const api = FAMILY_API[family];
-      if (vs.length > 1 || familyOf(vs[0].model).level) {
-        rows += `<tr class="sub"><td>${esc(family)}${api ? `<span class="api">${esc(api)}</span>` : ""}</td><td>all levels</td>${cells(totals(vs.flatMap((v) => v.cases)))}</tr>`;
-        rows += vs.map((v) => modelRow(v, "indent")).join("");
-      } else {
-        rows += modelRow(vs[0]);
-      }
-    }
-  }
-  const all = view.flatMap((v) => v.cases);
-  rows += `<tr class="total"><td>Total</td><td></td>${cells(totals(all))}</tr>`;
-  const arrow = (c) => (col && c.key === col.key ? (dir < 0 ? " ▾" : " ▴") : "");
-  $("cost-table").innerHTML =
-    `<thead><tr>${cols.map((c) => `<th class="sortable${c.num ? " num" : ""}" data-sort="${c.key}" title="${c.key === "model" ? "Group by model family" : "Sort"}">${esc(c.name)}${arrow(c)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody>`;
-  $("cost-table").querySelectorAll("th[data-sort]").forEach((th) => th.addEventListener("click", () => {
-    const key = th.dataset.sort;
-    // Model returns to the grouped view; a column sorts high to low first (reasoning: most capable first), then flips.
-    state.costSort = key === "model" ? { key: null, dir: -1 } : { key, dir: col && key === col.key ? -dir : -1 };
-    renderCostTable(view);
-  }));
-  const latest = latestOf(all);
-  $("cost-note").textContent = `What the selected tests cost each model's latest results at list prices (src/common/pricing.ts): uncached input, cache reads, cache writes and output each at their own rate. Requests are model calls; input tokens include the cached ones. ` +
-    `Cache writes are only recorded for Claude, so they show 0 elsewhere. A cost shows – when some cases have none; hover it for why. Click a column to sort the models across families; click Model to group them again. Last updated ${fmt.date(latest)} Central European Time.`;
-}
-
 /** The most recent updatedAt of some cases; CET strings with offsets, so compared as instants. */
 const latestOf = (cases) => cases.map((c) => c.updatedAt).filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b)).pop();
 
@@ -1112,11 +1001,7 @@ function providerShade(model) {
 /** Difficulty levels easiest first; levels outside this list follow, sorted, then cases without one. */
 const DIFFICULTY_ORDER = ["easy", "medium", "hard"];
 
-/**
- * Pass rate by difficulty: one small chart per level, each model's passed cases
- * out of those it ran at that level, sorted by that pass rate (ties: more cases
- * passed, then the overall order); models that ran none at the level go last.
- */
+/** Pass rate by difficulty: one small chart per level (see passRateCharts), easiest first, with the provider legend. */
 function renderDifficulty(view) {
   const levelOf = (c) => c.difficulty ?? "unrated";
   const rank = (l) => (DIFFICULTY_ORDER.includes(l) ? DIFFICULTY_ORDER.indexOf(l) : l === "unrated" ? Infinity : DIFFICULTY_ORDER.length);
@@ -1125,18 +1010,39 @@ function renderDifficulty(view) {
   $("provider-legend").innerHTML = providers.map((p) =>
     `<span class="item"><span class="sw" style="background:linear-gradient(90deg, color-mix(in oklab, ${PROVIDER_COLORS[p] ?? "var(--other)"} 30%, var(--surface)), ${PROVIDER_COLORS[p] ?? "var(--other)"})"></span>${esc(PROVIDER_NAMES[p] ?? p)}</span>`).join("") +
     `<span class="item muted">pale → vivid: smaller → larger model</span>`;
+  passRateCharts($("difficulty-charts"), "dc", view, levels, (c, l) => levelOf(c) === l);
+}
+
+/** Skill tags, then where the evidence lives, as the README lists them; other tags follow, by name. */
+const TAG_ORDER = ["record-selection", "calculation", "source-reasoning", "file-formats", "db-and-csv", "db-and-xls", "db-and-image", "db-only-evidence", "files-only"];
+
+/** Pass rate by tag: one small chart per tag in the cases' meta.json, built like the difficulty charts. */
+function renderTags(view) {
+  const rank = (t) => (TAG_ORDER.includes(t) ? TAG_ORDER.indexOf(t) : TAG_ORDER.length);
+  const tags = [...new Set(view.flatMap((v) => v.cases.flatMap((c) => c.tags ?? [])))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  if (!tags.length) { $("tag-charts").innerHTML = `<div class="empty">No tags in the selected cases</div>`; return; }
+  passRateCharts($("tag-charts"), "tc", view, tags, (c, t) => (c.tags ?? []).includes(t));
+}
+
+/**
+ * One small pass-rate chart per group in `container`: each model's passed cases
+ * out of those it ran in the group, sorted by that pass rate (ties: more cases
+ * passed, then the overall order); models that ran none in the group go last.
+ * Hovering or clicking a model highlights it in every chart of the container.
+ */
+function passRateCharts(container, prefix, view, groups, inGroup) {
   // Re-rendering rebuilds the bars; keep a clicked model highlighted.
-  linkHighlight($("difficulty-charts"));
-  $("difficulty-charts").innerHTML = levels.map((l, i) => `<div class="card"><h3>${esc(l)}</h3><div class="chart" id="dc-${i}"></div></div>`).join("");
-  levels.forEach((l, i) => {
+  linkHighlight(container);
+  container.innerHTML = groups.map((l, i) => `<div class="card"><h3>${esc(l)}</h3><div class="chart" id="${prefix}-${i}"></div></div>`).join("");
+  groups.forEach((l, i) => {
     const stats = view.map((v) => {
-      const cs = v.cases.filter((c) => levelOf(c) === l);
+      const cs = v.cases.filter((c) => inGroup(c, l));
       const passed = cs.filter((c) => c.metrics?.exact_match === 1).length;
       return { v, cs, passed, rate: cs.length ? passed / cs.length : null };
     });
     // Stable sort, so ties keep the overall order.
     stats.sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1) || b.passed - a.passed);
-    hbars($(`dc-${i}`), stats.map(({ v, cs, passed, rate }) => {
+    hbars($(`${prefix}-${i}`), stats.map(({ v, cs, passed, rate }) => {
       const ci = wilson(passed, cs.length);
       const t = tip(`${nameOf(v.model)} · ${l}`, [["Pass rate", fmt.pct(rate)], ["Passed", `${passed} of ${cs.length}`], ["95% CI", cs.length ? `${fmt.pct(ci.lo)} – ${fmt.pct(ci.hi)}` : "–"]],
         cs.map((c) => `${c.metrics?.exact_match === 1 ? "✓" : "✕"} ${c.test}/${c.caseId}`).join(", "));
@@ -1148,7 +1054,7 @@ function renderDifficulty(view) {
       };
     }), { domainMax: 1, ticks: fmt.pct });
   });
-  $("difficulty-charts")._applyHighlight();
+  container._applyHighlight();
 }
 
 /**

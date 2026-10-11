@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { columnName, readXls, XlsError, type XlsSheetData } from "../src/common/xls.js";
-import { ToolError, tools, type CaseContext } from "../src/tools/index.js";
+import { outputText, ToolError, tools, type CaseContext } from "../src/tools/index.js";
 import { buildMsg } from "../scripts/msg-writer.js";
 import { buildXls, type XlsSource } from "../scripts/xls-writer.js";
 
@@ -110,8 +110,8 @@ describe("xls writer and reader", () => {
 
 describe("read_xls_file", () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), "finrec-xls-"));
-  const ctx = { test: "t", caseId: "case-0001", evidenceDir, db: null as never } satisfies CaseContext;
-  const run = (name: string, input: Record<string, unknown>) => tools[name]!.run(input, ctx);
+  const ctx = { test: "t", caseId: "case-01", evidenceDir, db: null as never } satisfies CaseContext;
+  const run = async (name: string, input: Record<string, unknown>) => outputText(await tools[name]!.run(input, ctx));
 
   before(() => {
     writeFileSync(join(evidenceDir, "book.xls"), buildXls(workbook));

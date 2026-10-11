@@ -1,8 +1,9 @@
 // Reads Excel 97-2003 .xls workbooks (BIFF8, MS-XLS): every sheet's cell
 // values, with dates recognised from their number format and each cell's
-// fill colour. Handles what Excel itself writes: shared strings split across
-// CONTINUE records, RK and MULRK numbers, formulas with cached results and
-// their text, a custom palette and custom number formats.
+// fill colour, and the pictures placed over each sheet. Handles what Excel
+// itself writes: shared strings split across CONTINUE records, RK and MULRK
+// numbers, formulas with cached results and their text, a custom palette and
+// custom number formats, and drawings split across records.
 
 import CFB from "cfb";
 
@@ -20,10 +21,25 @@ export interface XlsCellData {
   formula?: string;
 }
 
+/** A picture placed over a sheet, such as a pasted screenshot. */
+export interface XlsPictureData {
+  /** Its name, as Excel's Name Box and Selection Pane show it: "Picture <n>" when it has none of its own. */
+  name: string;
+  /** Its alternative text, when it has one. */
+  description?: string;
+  /** The cells under its top-left and bottom-right corners, e.g. H3 and P21. */
+  from: string;
+  to: string;
+  format: "png" | "jpeg";
+  data: Buffer;
+}
+
 export interface XlsSheetData {
   name: string;
   /** Non-empty cells, by row then column. */
   cells: XlsCellData[];
+  /** Pictures over the sheet, in drawing order. */
+  pictures: XlsPictureData[];
 }
 
 export class XlsError extends Error {}
@@ -264,6 +280,90 @@ export const columnName = (index: number): string => {
   return name;
 };
 
+interface ArtRecord {
+  ver: number;
+  inst: number;
+  type: number;
+  body: Buffer;
+}
+
+/** The OfficeArt records (MS-ODRAW 2.1.1) in `data`, children of containers included, in order. */
+function artRecords(data: Buffer): ArtRecord[] {
+  const out: ArtRecord[] = [];
+  for (let at = 0; at + 8 <= data.length; ) {
+    const verInst = data.readUInt16LE(at);
+    const record = { ver: verInst & 0xf, inst: verInst >> 4, type: data.readUInt16LE(at + 2), body: data.subarray(at + 8, at + 8 + data.readUInt32LE(at + 4)) };
+    out.push(record);
+    // A container's body is its children; the record after it follows them.
+    at += 8 + (record.ver === 0xf ? 0 : record.body.length);
+  }
+  return out;
+}
+
+/** BLIP types with their record type and the instances whose header has a second 16-byte UID (MS-ODRAW 2.2.23 to 2.2.30). */
+const BLIPS: Record<number, { format: "png" | "jpeg"; twoUids: number[] }> = {
+  0xf01e: { format: "png", twoUids: [0x6e1] },
+  0xf01d: { format: "jpeg", twoUids: [0x46b, 0x6e3] },
+};
+
+/** The images of the drawing group's BLIP store, by 1-based index; undefined for a kind this reader doesn't return. */
+function blipStore(group: Buffer): ({ format: "png" | "jpeg"; data: Buffer } | undefined)[] {
+  return artRecords(group)
+    .filter((r) => r.type === 0xf007)
+    .map((bse) => {
+      // OfficeArtFBSE: 36 bytes of fields and a name of cbName bytes, then the BLIP itself when it is stored here rather than in a delay stream.
+      const start = 36 + (bse.body[33] ?? 0);
+      const [blip] = bse.body.length >= start + 8 ? artRecords(bse.body.subarray(start)) : [];
+      const kind = blip && BLIPS[blip.type];
+      if (!blip || !kind) return undefined;
+      return { format: kind.format, data: Buffer.from(blip.body.subarray((kind.twoUids.includes(blip.inst) ? 32 : 16) + 1)) };
+    });
+}
+
+/**
+ * The pictures of a sheet's drawing: each shape container with a picture
+ * (the pib property) and an anchor gives one, named by its wzName property.
+ */
+function drawingPictures(drawing: Buffer, store: ReturnType<typeof blipStore>): XlsPictureData[] {
+  const pictures: XlsPictureData[] = [];
+  const records = artRecords(drawing);
+  for (const [i, shape] of records.entries()) {
+    if (shape.type !== 0xf004) continue;
+    const end = shape.body.byteOffset + shape.body.length;
+    const parts = records.slice(i + 1).filter((r) => r.body.byteOffset < end);
+    const props = new Map<number, { value: number; complex?: Buffer }>();
+    const opt = parts.find((r) => r.type === 0xf00b);
+    if (opt) {
+      let complexAt = 6 * opt.inst;
+      for (let k = 0; k < opt.inst; k++) {
+        const id = opt.body.readUInt16LE(6 * k);
+        const value = opt.body.readUInt32LE(6 * k + 2);
+        const prop: { value: number; complex?: Buffer } = { value };
+        if (id & 0x8000) {
+          prop.complex = opt.body.subarray(complexAt, complexAt + value);
+          complexAt += value;
+        }
+        props.set(id & 0x3fff, prop);
+      }
+    }
+    const anchor = parts.find((r) => r.type === 0xf010 && r.body.length >= 18);
+    const image = store[(props.get(0x0104)?.value ?? 0) - 1];
+    if (!anchor || !image) continue;
+    const text = (id: number) => props.get(id)?.complex?.toString("utf16le").replace(/\0+$/, "");
+    const cell = (col: number, row: number) => `${columnName(col)}${row + 1}`;
+    const a = anchor.body;
+    const description = text(0x0381);
+    pictures.push({
+      name: text(0x0380) || `Picture ${pictures.length + 1}`,
+      ...(description && { description }),
+      from: cell(a.readUInt16LE(2), a.readUInt16LE(6)),
+      to: cell(a.readUInt16LE(10), a.readUInt16LE(14)),
+      ...image,
+    });
+  }
+  return pictures;
+}
+
 /** Parses an .xls workbook. Throws XlsError when it isn't one. */
 export function readXls(file: Buffer): XlsSheetData[] {
   let stream: Buffer;
@@ -287,8 +387,13 @@ export function readXls(file: Buffer): XlsSheetData[] {
   const sheets: { name: string; offset: number }[] = [];
   let strings: string[] = [];
   let date1904 = false;
+  // MSODRAWINGGROUP: the drawing group, which may run into CONTINUE records or further MSODRAWINGGROUP records.
+  const group: Buffer[] = [];
   for (const { type, data, continues } of globals) {
     switch (type) {
+      case 0x00eb:
+        group.push(data, ...continues);
+        break;
       case 0x0022: // DATEMODE
         date1904 = data.readUInt16LE(0) === 1;
         break;
@@ -336,8 +441,12 @@ export function readXls(file: Buffer): XlsSheetData[] {
     return { type: "date", value: ms === 0 ? iso.slice(0, 10) : `${iso.slice(0, 10)} ${iso.slice(11, 19)}` };
   };
 
+  const store = blipStore(Buffer.concat(group));
+
   return sheets.map(({ name, offset }) => {
     const cells = new Map<string, XlsCellData>();
+    // MSODRAWING: the sheet's drawing, split across records with an OBJ record after each shape.
+    const drawing: Buffer[] = [];
     const put = (row: number, col: number, ixfe: number, value: XlsValue, formula?: string) => {
       const fill = colour(xfs[ixfe]?.fill);
       cells.set(`${row}:${col}`, { row: row + 1, column: columnName(col), value, ...(fill && { fill }), ...(formula !== undefined && { formula }) });
@@ -348,6 +457,9 @@ export function readXls(file: Buffer): XlsSheetData[] {
       const col = () => data.readUInt16LE(2);
       const ixfe = () => data.readUInt16LE(4);
       switch (type) {
+        case 0x00ec:
+          drawing.push(data, ...continues);
+          break;
         case 0x00fd: // LABELSST
           put(row(), col(), ixfe(), { type: "text", value: strings[data.readUInt32LE(6)] ?? "" });
           break;
@@ -397,6 +509,6 @@ export function readXls(file: Buffer): XlsSheetData[] {
         return ra! - rb! || ca! - cb!;
       })
       .map(([, cell]) => cell);
-    return { name, cells: sorted };
+    return { name, cells: sorted, pictures: drawingPictures(Buffer.concat(drawing), store) };
   });
 }

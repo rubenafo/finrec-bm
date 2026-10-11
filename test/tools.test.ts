@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { caseContext } from "../src/case-context.js";
 import { openTestDb, type TestDb } from "../src/test-db.js";
-import { listEvidence, ToolError, tools, type CaseContext } from "../src/tools/index.js";
+import { listEvidence, outputText, ToolError, tools, type CaseContext } from "../src/tools/index.js";
 import { buildMsg } from "../scripts/msg-writer.js";
 
 // A throwaway test folder: db.sql loads a CSV by relative path, one case with evidence.
 const testDir = mkdtempSync(join(tmpdir(), "finrec-test-"));
-const caseDir = join(testDir, "data", "case-0001");
+const caseDir = join(testDir, "data", "case-01");
 const evidenceDir = join(caseDir, "evidence");
 const forwardSlashes = (path: string) => path.replaceAll("\\", "/");
 
@@ -42,7 +42,7 @@ before(async () => {
   writeFileSync(join(caseDir, "expected.json"), "{}");
 
   db = await openTestDb(testDir);
-  ctx = caseContext(testDir, "case-0001", db.connection);
+  ctx = caseContext(testDir, "case-01", db.connection);
 });
 
 after(() => {
@@ -50,7 +50,7 @@ after(() => {
   rmSync(testDir, { recursive: true, force: true });
 });
 
-const run = (name: string, input: Record<string, unknown>) => tools[name]!.run(input, ctx);
+const run = async (name: string, input: Record<string, unknown>) => outputText(await tools[name]!.run(input, ctx));
 
 /** Splits one CSV line into fields, unquoting "..." fields. */
 function splitCsv(line: string): string[] {

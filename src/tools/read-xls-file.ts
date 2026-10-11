@@ -1,5 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
+import { imageInfo } from "../common/image.js";
 import { readXls, XlsError, type XlsCellData } from "../common/xls.js";
 import { resolveEvidence } from "./paths.js";
 import { requireString, ToolError, type Tool } from "./types.js";
@@ -20,7 +21,9 @@ export const readXlsFile: Tool = {
     "Read an Excel 97-2003 .xls workbook for this case. Returns every sheet's non-empty cells, one line per row, " +
     "each cell as <column><row>=<value>: text in double quotes, numbers as stored (without display formatting), " +
     "dates as \"date yyyy-mm-dd\". A formula cell shows its last calculated value followed by the formula, as " +
-    "[formula =SUM(F4:F7)]. A cell with a background fill shows it as [fill #RRGGBB]; cells without one have no fill.",
+    "[formula =SUM(F4:F7)]. A cell with a background fill shows it as [fill #RRGGBB]; cells without one have no fill. " +
+    "Pictures placed over a sheet, such as screenshots, are listed after its cells by name and the cells they cover: " +
+    "view them with read_image_file.",
   inputSchema: {
     type: "object",
     properties: {
@@ -50,7 +53,13 @@ export const readXlsFile: Tool = {
       const rows = new Map<number, XlsCellData[]>();
       for (const cell of sheet.cells) rows.set(cell.row, [...(rows.get(cell.row) ?? []), cell]);
       const lines = [...rows.entries()].map(([row, cells]) => `row ${row}: ${cells.map(formatCell).join(" | ")}`);
-      parts.push(`=== sheet ${JSON.stringify(sheet.name)}${lines.length === 0 ? " (empty)" : ""}\n${lines.join("\n")}`.trimEnd());
+      for (const p of sheet.pictures) {
+        const image = imageInfo(p.data);
+        const size = image ? `, ${image.format.toUpperCase()} ${image.width}x${image.height} pixels` : "";
+        lines.push(`picture ${JSON.stringify(p.name)} over ${p.from}:${p.to}${size}${p.description ? `, alt text ${JSON.stringify(p.description)}` : ""}`);
+      }
+      const empty = sheet.cells.length === 0 && sheet.pictures.length === 0;
+      parts.push(`=== sheet ${JSON.stringify(sheet.name)}${empty ? " (empty)" : ""}\n${lines.join("\n")}`.trimEnd());
     }
     return parts.join("\n\n");
   },

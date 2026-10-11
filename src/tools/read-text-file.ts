@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { imageInfo } from "../common/image.js";
 import { resolveEvidence } from "./paths.js";
 import { MAX_BATCH, requireStringList, runBatch, ToolError, type Tool } from "./types.js";
 
@@ -36,6 +37,7 @@ export const readTextFile: Tool = {
         const lower = file.toLowerCase();
         if (lower.endsWith(".msg")) throw new ToolError("file is an Outlook email: read it with read_msg_file");
         if (lower.endsWith(".xls")) throw new ToolError("file is an Excel workbook: read it with read_xls_file");
+        if (imageInfo(content)) throw new ToolError("file is an image: view it with read_image_file");
         throw new ToolError("file is not plain text");
       }
       return content.toString("utf8");

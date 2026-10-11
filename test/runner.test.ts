@@ -49,11 +49,11 @@ describe("runTest", () => {
 
     const perfect = { id_precision: 1, id_recall: 1, f1: 1, file_accuracy: 1, claim_recall: 1, exact_match: 1 };
     assert.equal(run.test, "txt-matching");
-    // Every case is run; the scripted answer is case-0001's.
+    // Every case is run; the scripted answer is case-01's.
     assert.equal(run.results.length, readdirSync(join(benchmarkDir, "txt-matching", "data")).length);
-    assert.deepEqual(run.results.find((r) => r.caseId === "case-0001")!.metrics, perfect);
+    assert.deepEqual(run.results.find((r) => r.caseId === "case-01")!.metrics, perfect);
 
-    const result = JSON.parse(readFileSync(join(outDir, "case-0001.json"), "utf8")) as CaseResult;
+    const result = JSON.parse(readFileSync(join(outDir, "case-01.json"), "utf8")) as CaseResult;
     assert.deepEqual(result.metrics, perfect);
     assert.deepEqual(result.answer, answer);
     assert.deepEqual(result.toolCalls.map((c) => [c.name, c.error]), [
@@ -84,7 +84,7 @@ describe("runTest", () => {
       log: quiet,
     });
     assert.equal(run.results[0]!.metrics.exact_match, 0);
-    const result = JSON.parse(readFileSync(join(outRoot, "limit", "case-0001.json"), "utf8")) as CaseResult;
+    const result = JSON.parse(readFileSync(join(outRoot, "limit", "case-01.json"), "utf8")) as CaseResult;
     assert.match(result.error!, /stopped after 2 turns/);
     assert.equal(result.answer, null);
   });
@@ -110,7 +110,7 @@ describe("runTest", () => {
   });
 
   it("starts each case fresh: a new conversation and a new database", async () => {
-    // case-0001 seeds DuckDB's random generator; case-0002 then draws a number.
+    // case-01 seeds DuckDB's random generator; case-02 then draws a number.
     // In a shared database it would get the seeded value.
     const seeded = await openTestDb(join(benchmarkDir, "txt-matching"));
     await seeded.connection.run("SELECT setseed(0.42)");
@@ -131,20 +131,20 @@ describe("runTest", () => {
       log: quiet,
     });
     assert.deepEqual(run.results.slice(0, 2).map((r) => [r.caseId, r.error]), [
-      ["case-0001", undefined],
-      ["case-0002", undefined],
+      ["case-01", undefined],
+      ["case-02", undefined],
     ]);
 
-    // case-0002's first model call sees only its own prompt, nothing from case-0001.
+    // case-02's first model call sees only its own prompt, nothing from case-01.
     const firstOfCase2 = model.received[2]!;
     assert.equal(firstOfCase2.length, 1);
     assert.ok(JSON.stringify(firstOfCase2).includes("Fabrikam Industrial"));
     assert.ok(!JSON.stringify(firstOfCase2).includes("setseed"));
 
-    // The draw in case-0002 is the last message of its next model call: a tool result.
+    // The draw in case-02 is the last message of its next model call: a tool result.
     const drawResult = JSON.stringify(model.received[3]!.at(-1));
-    assert.match(drawResult, /r\\n0\.\d/, "case-0002's query returned a number");
-    assert.ok(!drawResult.includes(seededDraw), "case-0002's database was not seeded by case-0001");
+    assert.match(drawResult, /r\\n0\.\d/, "case-02's query returned a number");
+    assert.ok(!drawResult.includes(seededDraw), "case-02's database was not seeded by case-01");
   });
 
   it("runs cases of several tests at once through a shared limiter, each with its own model", async () => {
@@ -191,19 +191,19 @@ describe("runTest with cases", () => {
   it("runs only the given cases, replacing their result files and leaving the others", async () => {
     const outDir = join(outRoot, "only");
     mkdirSync(outDir, { recursive: true });
-    writeFileSync(join(outDir, "case-0001.json"), "old");
-    writeFileSync(join(outDir, "case-0002.json"), "kept");
+    writeFileSync(join(outDir, "case-01.json"), "old");
+    writeFileSync(join(outDir, "case-02.json"), "kept");
     const run = await runTest({
       testDir: join(benchmarkDir, "txt-matching"),
       model: new ScriptedModel([{ text: "{}" }]),
       modelSpec: "scripted:model",
       outDir,
-      cases: ["case-0001"],
+      cases: ["case-01"],
       log: quiet,
     });
-    assert.deepEqual(run.results.map((r) => r.caseId), ["case-0001"]);
-    assert.equal((JSON.parse(readFileSync(join(outDir, "case-0001.json"), "utf8")) as CaseResult).caseId, "case-0001");
-    assert.equal(readFileSync(join(outDir, "case-0002.json"), "utf8"), "kept");
+    assert.deepEqual(run.results.map((r) => r.caseId), ["case-01"]);
+    assert.equal((JSON.parse(readFileSync(join(outDir, "case-01.json"), "utf8")) as CaseResult).caseId, "case-01");
+    assert.equal(readFileSync(join(outDir, "case-02.json"), "utf8"), "kept");
   });
 });
 
