@@ -1,0 +1,6 @@
+return_id,shipment_id,return_date,quantity_returned,reason
+RT-73001,SH-72012,2026-07-09,20,damaged in transit
+RT-73002,SH-72003,2026-08-18,15,wrong colour
+RT-73003,SH-72007,2026-09-14,30,faulty zips
+RT-73004,SH-72006,2026-08-20,50,overstock
+RT-73005,SH-72010,2026-10-05,10,damaged in transit

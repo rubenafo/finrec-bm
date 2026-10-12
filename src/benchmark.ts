@@ -9,14 +9,14 @@ import { loadEnv } from "./common/env.js";
 import { availableModelSpecs, createModel, formatModelSpec, hasApiKey, modelFamilies, modelProviders, providers, resolveModelList, type ModelSpec } from "./common/model.js";
 import { matchNames } from "./common/pattern.js";
 import { DEFAULT_MAX_TURNS } from "./common/agent.js";
-import { limiter } from "./common/limit.js";
+import { shuffledLimiter } from "./common/limit.js";
 import { modelFolder, writeResultsSummary } from "./results.js";
 import { caseIds, runTest } from "./runner.js";
 import { buildModelSummary } from "./summary.js";
 
 loadEnv();
 
-const DEFAULT_CONCURRENCY = 15;
+const DEFAULT_CONCURRENCY = 40;
 
 const usage = `usage: npm run benchmark [--model=<models>] [--test=<tests>] [--case=<cases>] [--concurrency=<n>]
        npm run benchmark -- [--model <models>] [--test <tests>] [--case <cases>] [--concurrency <n>]
@@ -40,7 +40,8 @@ options:
             case-01 (default: all)
   --concurrency
             cases to run at once, across all models and tests (default:
-            ${DEFAULT_CONCURRENCY}); 1 runs them one after another
+            ${DEFAULT_CONCURRENCY}); 1 runs them one after another. Cases
+            start in random order, mixing models and tests
 
 Scoring is deterministic: each test's scorer compares the answer with the
 expected records.
@@ -102,6 +103,11 @@ const concurrency = Number(concurrencyText);
 if (!/^\d+$/.test(concurrencyText.trim()) || concurrency < 1) {
   fail(`--concurrency must be a whole number of at least 1, not "${concurrencyText}"`);
 }
+// DuckDB runs each case's queries on libuv's thread pool, 4 threads by
+// default, so more concurrent cases than that would queue for it. Size the pool
+// to the concurrency (libuv's maximum is 1024); libuv reads this when the pool
+// first starts, which is after this point, since nothing above does async I/O.
+process.env.UV_THREADPOOL_SIZE = String(Math.min(Math.max(concurrency, 4), 1024));
 
 let models: ModelSpec[];
 try {
@@ -177,10 +183,12 @@ const scope = runs.map((r) => (cases.length > 0 ? `${r.test} (${r.cases.join(", 
 console.error(`benchmark: models ${modelSpecs.join(", ")}; tests ${scope}`);
 
 // Every case of every model and test is a job; the shared limiter caps how
-// many run at once. Jobs start in model, test, case order. Each case builds its
+// many run at once. Jobs start in random order, mixing models and tests, so
+// no model or test runs all at once or all at the end. Each case builds its
 // own model instance, so concurrent cases share no client state.
-const limit = limiter(concurrency);
-console.error(`benchmark: up to ${concurrency} case(s) at once`);
+const jobs = models.length * runs.reduce((n, run) => n + run.cases.length, 0);
+const limit = shuffledLimiter(concurrency, jobs);
+console.error(`benchmark: ${jobs} case(s) in random order, up to ${concurrency} at once`);
 const modelRuns = await Promise.all(
   models.map(async (model, i) => {
     const modelSpec = modelSpecs[i]!;

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { BaseModelConfig, Model } from "@strands-agents/sdk";
-import { deepseekFetch } from "./deepseek-fetch.js";
+import { deepseekFetch, oneBlockAtATime } from "./deepseek-fetch.js";
+import { cacheWriteRecorder } from "./openai-fetch.js";
 import { ModelProvider, type BuildOptions } from "./model-provider.js";
 import { matchNames } from "./pattern.js";
 
@@ -60,17 +61,6 @@ const anthropic = new ModelProvider({
   },
 });
 
-const bedrock = new ModelProvider({
-  name: "bedrock",
-  label: "Amazon Bedrock",
-  // Any model or inference profile ID; availability depends on account and region.
-  // Credentials come from the AWS credential chain, region from AWS_REGION.
-  async create(modelId, { maxTokens }) {
-    const { BedrockModel } = await import("@strands-agents/sdk/models/bedrock");
-    return new BedrockModel({ modelId, maxTokens, ...(process.env.AWS_REGION && { region: process.env.AWS_REGION }) });
-  },
-});
-
 /** OpenAI reasoning efforts, sent as the Responses API's `reasoning.effort`. */
 type OpenAIReasoning = "none" | "low" | "medium" | "high" | "xhigh";
 
@@ -102,13 +92,22 @@ const openai = new ModelProvider({
     // instance, so per case, keeps each conversation's requests on one cache
     // instead of spreading concurrent cases that share the same opening prefix.
     const cacheConfig = { cacheKey: `finrec-${randomUUID()}` };
+    // Adds the cache writes OpenAI bills to each response's usage (see cacheWriteRecorder).
+    const writes = cacheWriteRecorder();
+    class OpenAIModelWithCacheWrites extends OpenAIModel {
+      override stream(...args: Parameters<InstanceType<typeof OpenAIModel>["stream"]>) {
+        return writes.withCacheWrites(super.stream(...args));
+      }
+    }
+    const clientConfig = { fetch: writes.fetch };
     const named = openaiModels[modelId];
-    if (named === undefined) return new OpenAIModel({ modelId, maxTokens, apiKey: apiKey!, cacheConfig });
-    return new OpenAIModel({
+    if (named === undefined) return new OpenAIModelWithCacheWrites({ modelId, maxTokens, apiKey: apiKey!, cacheConfig, clientConfig });
+    return new OpenAIModelWithCacheWrites({
       modelId: named.apiModel,
       maxTokens,
       apiKey: apiKey!,
       cacheConfig,
+      clientConfig,
       params: { reasoning: { effort: named.reasoning } },
     });
   },
@@ -158,12 +157,18 @@ const deepseek = new ModelProvider({
   // repeated prompt prefixes automatically; there is no setting for it.
   async create(modelId, { apiKey, maxTokens }) {
     const { OpenAIModel } = await import("@strands-agents/sdk/models/openai");
+    // Keeps every tool call of a reply, not just the last (see oneBlockAtATime).
+    class DeepSeekModel extends OpenAIModel {
+      override stream(...args: Parameters<InstanceType<typeof OpenAIModel>["stream"]>) {
+        return oneBlockAtATime(super.stream(...args));
+      }
+    }
     const { apiModel, reasoning } = deepseekModels[modelId]!;
     const params =
       reasoning === "off"
         ? { thinking: { type: "disabled" } }
         : { thinking: { type: "enabled" }, reasoning_effort: reasoning };
-    return new OpenAIModel({
+    return new DeepSeekModel({
       api: "chat",
       params,
       modelId: apiModel,
@@ -177,7 +182,7 @@ const deepseek = new ModelProvider({
 
 /** Every provider the benchmark can run against, keyed by name. */
 export const modelProviders: Record<string, ModelProvider> = Object.fromEntries(
-  [anthropic, bedrock, openai, google, deepseek].map((p) => [p.name, p]),
+  [anthropic, openai, google, deepseek].map((p) => [p.name, p]),
 );
 
 export const providers = Object.keys(modelProviders);
@@ -193,7 +198,7 @@ export interface ModelSpec {
  * DeepSeek and named OpenAI and Anthropic models go by their name alone
  * (`ds-flash-reasoning-high`, `oa-luna-reasoning-xhigh`, `at-sonnet-high`); a
  * `deepseek:`, `openai:` or `anthropic:` prefix is accepted too. Only the first colon separates provider
- * and ID, so Bedrock IDs that contain colons (`...-v1:0`) work as-is.
+ * and ID, so IDs that contain colons (OpenAI's `ft:...` fine-tunes) work as-is.
  */
 export function parseModelSpec(spec: string): ModelSpec {
   if (spec.trim() in deepseekModels) return { provider: deepseek.name, modelId: spec.trim() };
@@ -224,7 +229,7 @@ export function formatModelSpec({ provider, modelId }: ModelSpec): string {
 
 /**
  * Every listed model as a spec, e.g. `anthropic:claude-opus-5`,
- * `ds-flash-reasoning-high`, `oa-sol-reasoning-low`. Bedrock and Google list
+ * `ds-flash-reasoning-high`, `oa-sol-reasoning-low`. Google lists
  * none; OpenAI lists its named models.
  */
 export function knownModelSpecs(): string[] {
@@ -234,7 +239,7 @@ export function knownModelSpecs(): string[] {
 /**
  * Every listed model whose provider has its API key set: what runs when
  * neither `--model` nor FINREC_MODEL is given. Providers that list no models
- * (Bedrock, Google) are left out, since they need a model ID.
+ * (Google) are left out, since they need a model ID.
  */
 export function availableModelSpecs(env: NodeJS.ProcessEnv = process.env): string[] {
   return Object.values(modelProviders)
@@ -242,7 +247,7 @@ export function availableModelSpecs(env: NodeJS.ProcessEnv = process.env): strin
     .flatMap((p) => p.listed.map((modelId) => formatModelSpec({ provider: p.name, modelId })));
 }
 
-/** Whether a model's provider has the API key it needs (Bedrock uses the AWS credential chain, so always does). */
+/** Whether a model's provider has the API key it needs. */
 export function hasApiKey({ provider }: ModelSpec, env: NodeJS.ProcessEnv = process.env): boolean {
   const p = modelProviders[provider]!;
   return p.apiKeyEnv === undefined || p.apiKey(env) !== undefined;

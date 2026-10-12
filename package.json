@@ -7,8 +7,6 @@
   "scripts": {
     "benchmark": "tsx src/benchmark.ts",
     "dashboard": "tsx src/dashboard.ts",
-    "make-msg": "tsx scripts/make-msg.ts",
-    "make-xls": "tsx scripts/make-xls.ts",
     "show-models": "tsx src/show-models.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"

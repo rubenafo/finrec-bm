@@ -11,7 +11,7 @@ export interface ModelProviderConfig {
   label: string;
   /**
    * Model IDs this provider supports. Omit to accept any ID, for providers
-   * whose catalog varies by account or region (e.g. Bedrock).
+   * whose catalog changes often (e.g. OpenAI, Google).
    */
   models?: readonly string[];
   /**

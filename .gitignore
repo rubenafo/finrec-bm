@@ -8,3 +8,5 @@ node_modules/
 
 # API keys (template: .env.example)
 .env
+
+.tmp

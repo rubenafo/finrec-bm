@@ -8,7 +8,7 @@ import { anthropicModels, availableModelSpecs, createModel, deepseekModels, form
 import { reportsCacheApart } from "../src/common/model-provider.js";
 import { matchNames } from "../src/common/pattern.js";
 
-const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "AWS_REGION"];
+const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY"];
 let saved: NodeJS.ProcessEnv;
 
 // Tests control the API keys themselves; the real .env is never loaded here.
@@ -22,12 +22,12 @@ afterEach(() => {
 
 describe("model specs", () => {
   it("lists the providers", () => {
-    assert.deepEqual(providers, ["anthropic", "bedrock", "openai", "google", "deepseek"]);
+    assert.deepEqual(providers, ["anthropic", "openai", "google", "deepseek"]);
   });
 
   it("parses provider and model ID, keeping colons in the ID", () => {
     assert.deepEqual(parseModelSpec("anthropic:claude-opus-5"), { provider: "anthropic", modelId: "claude-opus-5" });
-    assert.deepEqual(parseModelSpec("bedrock:vendor.model-v1:0"), { provider: "bedrock", modelId: "vendor.model-v1:0" });
+    assert.deepEqual(parseModelSpec("openai:ft:gpt-5:org:abc"), { provider: "openai", modelId: "ft:gpt-5:org:abc" });
     assert.deepEqual(parseModelSpec("ds-v4p-reasoning-max"), { provider: "deepseek", modelId: "ds-v4p-reasoning-max" });
     assert.deepEqual(parseModelSpec("deepseek:ds-v4p-reasoning-max"), { provider: "deepseek", modelId: "ds-v4p-reasoning-max" });
     assert.deepEqual(parseModelSpec("oa-luna-reasoning-xhigh"), { provider: "openai", modelId: "oa-luna-reasoning-xhigh" });
@@ -51,7 +51,6 @@ describe("model specs", () => {
     const env = { DEEPSEEK_API_KEY: "k", ANTHROPIC_API_KEY: "" };
     assert.equal(hasApiKey(parseModelSpec("ds-flash-reasoning-off"), env), true);
     assert.equal(hasApiKey(parseModelSpec("anthropic:claude-opus-5"), env), false, "blank keys are unset");
-    assert.equal(hasApiKey(parseModelSpec("bedrock:any-model"), {}), true, "Bedrock uses the AWS credential chain");
   });
 
   it("formats DeepSeek and named OpenAI and Anthropic models without the provider prefix", () => {
@@ -175,7 +174,6 @@ describe("ModelProvider", () => {
     const openai = modelProviders.openai!;
     assert.equal(openai.apiKey({ OPENAI_API_KEY: "" }), undefined);
     assert.equal(openai.apiKey({ OPENAI_API_KEY: "k" }), "k");
-    assert.equal(modelProviders.bedrock!.apiKey({}), undefined);
   });
 
   it("builds a Strands model for every provider without calling it", async () => {
@@ -184,11 +182,9 @@ describe("ModelProvider", () => {
       OPENAI_API_KEY: "test",
       GEMINI_API_KEY: "test",
       DEEPSEEK_API_KEY: "test",
-      AWS_REGION: "us-east-1",
     });
     for (const spec of [
       "anthropic:claude-opus-5",
-      "bedrock:any-model",
       "openai:any-model",
       "google:any-model",
     ]) {
@@ -246,7 +242,7 @@ describe("ModelProvider", () => {
 
   it("turns on prompt caching for every Anthropic model, whose input tokens leave out the cached ones", async () => {
     process.env.ANTHROPIC_API_KEY = "test";
-    for (const spec of ["at-sonnet-high", "anthropic:claude-opus-5"]) {
+    for (const spec of [...Object.keys(anthropicModels), "anthropic:claude-opus-5"]) {
       assert.deepEqual(((await createModel(spec)).getConfig() as { cacheConfig?: unknown }).cacheConfig, { strategy: "auto" }, spec);
     }
     assert.equal(modelProviders.anthropic!.inputTokensExcludeCache, true);
@@ -271,10 +267,6 @@ describe("ModelProvider", () => {
     await assert.rejects(createModel("ds-flash-reasoning-high"), /DeepSeek needs an API key: set DEEPSEEK_API_KEY in \.env/);
     await assert.rejects(createModel("openai:any-model"), /set OPENAI_API_KEY in \.env/);
     await assert.rejects(createModel("anthropic:claude-opus-5"), /set ANTHROPIC_API_KEY in \.env/);
-  });
-
-  it("doesn't require a key for Bedrock, which uses the AWS credential chain", async () => {
-    await createModel("bedrock:any-model");
   });
 
   it("picks up keys from a .env file", async () => {

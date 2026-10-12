@@ -6,7 +6,7 @@
 
 import CFB from "cfb";
 
-/** An email as stored in a case's msg-sources/<name>.json. */
+/** An email to write: its headers, bodies and attachments. */
 export interface MsgSource {
   from: { name: string; email: string };
   to: { name: string; email: string }[];

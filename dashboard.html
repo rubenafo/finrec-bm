@@ -17,11 +17,10 @@
     --axis: #c3c2b7;
     --border: rgba(11, 11, 11, 0.10);
     --hover: rgba(11, 11, 11, 0.04);
-    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
-    --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
     --other: #898781;
-    /* Each model has its own slot, assigned in this order to models grouped by family,
-       most capable first; the order passes the adjacent-pair colour-blindness checks. */
+    /* Every chart colours a model by its provider: OpenAI green, Anthropic orange, DeepSeek blue,
+       shaded from the provider's largest model (full hue) to its smallest (palest). */
+    --openai: #1baf7a; --anthropic: #eb6834; --deepseek: #2a78d6;
     --seq-lo: #86b6ef; --seq-hi: #184f95; --heat-0: #e6f0fc; --on-hi: #ffffff;
     --critical: #d03b3b; --warning: #fab219;
     /* Case outcomes: a neutral grey ramp (validated --ordinal), dark = exact, so no outcome
@@ -101,7 +100,7 @@
   #tip .row span:last-child { font-variant-numeric: tabular-nums; }
   #tip .text { margin-top: 6px; color: var(--ink-2); white-space: normal; }
   [data-tip] { cursor: default; }
-  [data-tip]:focus { outline: 2px solid var(--s1); outline-offset: 1px; }
+  [data-tip]:focus { outline: 2px solid var(--ink-2); outline-offset: 1px; }
   .ci { display: flex; align-items: center; gap: 10px; }
   .ci svg { flex: none; }
   .ci .cv { font-variant-numeric: tabular-nums; }
@@ -302,7 +301,7 @@ function tip(title, rows = [], text) {
 
 // ---------- data ----------
 let runs = [];        // [{ folder, summary }], one per model
-let models = [];      // model specs, grouped by family, most capable first; index = colour slot
+let models = [];      // model specs, grouped by family, most capable first
 let families = [];    // model families, sorted
 const state = { test: "__all", metric: null, sort: { key: null, dir: -1 }, headSort: { key: null, dir: 1 } };
 
@@ -333,11 +332,8 @@ const nameOf = (model) => {
   return level ? `${family}-${level}` : model;
 };
 
-/** Each model's own hue: slots in palette order over the models, grouped by family. */
-function colorOf(model) {
-  const i = models.indexOf(model);
-  return i >= 0 && i < 8 ? `var(--s${i + 1})` : "var(--other)";
-}
+/** A model's colour in every chart, legend and table: its provider's hue, shaded by size (see providerShade). */
+const colorOf = (model) => providerShade(model);
 
 /** Reasoning level as a 1-5 bar signal glyph (off or none = 1 bar, max or xhigh = 5); empty for models without levels. */
 function levelGlyph(model) {
@@ -972,20 +968,23 @@ function renderCaseHeatmap(view, metric, metrics) {
 }
 
 /** One hue per provider; models of other providers share the neutral. */
-const PROVIDER_COLORS = { anthropic: "var(--s2)", openai: "var(--s3)", deepseek: "var(--s1)" };
+const PROVIDER_COLORS = { anthropic: "var(--anthropic)", openai: "var(--openai)", deepseek: "var(--deepseek)" };
 const PROVIDER_NAMES = { anthropic: "Anthropic", openai: "OpenAI", deepseek: "DeepSeek" };
 /** Families by model size within a provider, larger first; unlisted families rank after these. */
 const FAMILY_SIZE = ["at-sonnet", "at-haiku", "oa-sol", "oa-luna", "ds-v4p", "ds-flash"];
 
-/** A model's provider, from its summary. */
+/** A model's provider: from its summary, else from its name (at-, oa-, ds- or dp-, or a provider: prefix). */
 function providerOf(model) {
-  return runs.find((r) => modelOf(r.summary) === model)?.summary.model?.provider ?? model.split(":")[0];
+  const recorded = runs.find((r) => modelOf(r.summary) === model)?.summary.model?.provider;
+  if (recorded) return recorded;
+  const named = { at: "anthropic", oa: "openai", ds: "deepseek", dp: "deepseek" }[model.slice(0, 2)];
+  return model.includes(":") ? model.split(":")[0] : (named ?? model);
 }
 
 /**
  * Colour by provider, shaded by size: the provider's largest model (bigger
  * family, then higher reasoning level) gets the full hue, and each smaller one
- * is mixed further towards the surface, down to 30%.
+ * is mixed further towards the surface, down to 40%, which still shows on it.
  */
 function providerShade(model) {
   const provider = providerOf(model);
@@ -994,7 +993,7 @@ function providerShade(model) {
   const peers = models.filter((m) => providerOf(m) === provider)
     .sort((a, b) => size(a) - size(b) || rankOf(familyOf(b).level) - rankOf(familyOf(a).level) || a.localeCompare(b));
   const i = peers.indexOf(model);
-  const pct = peers.length > 1 ? Math.round(100 - (70 * i) / (peers.length - 1)) : 100;
+  const pct = peers.length > 1 ? Math.round(100 - (60 * i) / (peers.length - 1)) : 100;
   return `color-mix(in oklab, ${hue} ${pct}%, var(--surface))`;
 }
 
@@ -1008,13 +1007,13 @@ function renderDifficulty(view) {
   const levels = [...new Set(view.flatMap((v) => v.cases.map(levelOf)))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   const providers = [...new Set(view.map((v) => providerOf(v.model)))].sort();
   $("provider-legend").innerHTML = providers.map((p) =>
-    `<span class="item"><span class="sw" style="background:linear-gradient(90deg, color-mix(in oklab, ${PROVIDER_COLORS[p] ?? "var(--other)"} 30%, var(--surface)), ${PROVIDER_COLORS[p] ?? "var(--other)"})"></span>${esc(PROVIDER_NAMES[p] ?? p)}</span>`).join("") +
+    `<span class="item"><span class="sw" style="background:linear-gradient(90deg, color-mix(in oklab, ${PROVIDER_COLORS[p] ?? "var(--other)"} 40%, var(--surface)), ${PROVIDER_COLORS[p] ?? "var(--other)"})"></span>${esc(PROVIDER_NAMES[p] ?? p)}</span>`).join("") +
     `<span class="item muted">pale → vivid: smaller → larger model</span>`;
   passRateCharts($("difficulty-charts"), "dc", view, levels, (c, l) => levelOf(c) === l);
 }
 
 /** Skill tags, then where the evidence lives, as the README lists them; other tags follow, by name. */
-const TAG_ORDER = ["record-selection", "calculation", "source-reasoning", "file-formats", "db-and-csv", "db-and-xls", "db-and-image", "db-only-evidence", "files-only"];
+const TAG_ORDER = ["record-selection", "calculation", "source-reasoning", "file-formats", "db-and-csv", "db-and-txt", "db-and-xls", "db-and-image", "db-only-evidence", "files-only"];
 
 /** Pass rate by tag: one small chart per tag in the cases' meta.json, built like the difficulty charts. */
 function renderTags(view) {

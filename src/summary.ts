@@ -3,7 +3,7 @@ import type { Metrics } from "./scorer.js";
 import type { Activity, CaseResult } from "./runner.js";
 
 /** Bumped whenever the shape of summary.json changes, so dashboards can tell versions apart. */
-export const SUMMARY_SCHEMA_VERSION = 9;
+export const SUMMARY_SCHEMA_VERSION = 10;
 
 export interface Usage {
   inputTokens: number;
@@ -12,9 +12,32 @@ export interface Usage {
   cachedInputTokens: number;
   /**
    * The part of inputTokens written to the prompt cache, where the provider
-   * reports it (Anthropic); missing in results recorded before it was.
+   * reports it (Anthropic, OpenAI); missing in results recorded before it was.
    */
   cacheWriteInputTokens?: number;
+}
+
+/** The tokens of one model request, and when it was made (ISO 8601). */
+export interface RequestUsage extends Usage {
+  at: string;
+}
+
+/**
+ * Whether an error is the provider's, not the model's: the API refused or
+ * failed the request (billing, authentication, rate limits, outages, the
+ * network), so the case says nothing about the model and should be rerun.
+ * Anything else, such as the turn limit, the token limit or a malformed tool
+ * call, is the model's.
+ */
+const API_ERROR =
+  /insufficient balance|no credits|credit balance|quota|billing|\b(401|402|403|429|500|502|503|504|529)\b|rate.?limit|overloaded|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|fetch failed|socket hang up|network error/i;
+
+export type ErrorKind = "api" | "model";
+
+/** Which side an error is on (see API_ERROR); null when there was none. */
+export function errorKind(error: string | null | undefined): ErrorKind | null {
+  if (!error) return null;
+  return API_ERROR.test(error) ? "api" : "model";
 }
 
 export interface ModelInfo {
@@ -39,11 +62,21 @@ export interface CaseSummary {
   activity: Activity;
   /** The agent's tokens. */
   usage: Usage;
-  /** What the tokens cost in USD at list prices (see pricing.ts); null when the model has no known price. */
+  /**
+   * False for a result that errored before usage was recorded per request:
+   * its earlier requests' tokens were lost, so usage and cost are unknown.
+   */
+  usageRecorded: boolean;
+  /**
+   * What the tokens cost in USD at list prices (see pricing.ts); null when the
+   * model has no known price or the usage wasn't recorded.
+   */
   costUsd: number | null;
   /** When the case finished, in CET; null for results written before this was recorded. */
   updatedAt: string | null;
   error: string | null;
+  /** "api" for an error on the provider's side (rerun the case), "model" for any other; null without an error. */
+  errorKind: ErrorKind | null;
 }
 
 export interface Stats {
@@ -165,6 +198,8 @@ function stats(values: number[]): Stats {
 }
 
 function summarizeCase(model: ModelInfo, r: CaseResult): CaseSummary {
+  // Since requests are recorded, an errored run keeps the usage of the requests it made.
+  const usageRecorded = r.requests !== undefined || !r.error || r.usage.inputTokens + r.usage.outputTokens > 0;
   return {
     caseId: r.caseId,
     difficulty: r.difficulty,
@@ -176,9 +211,11 @@ function summarizeCase(model: ModelInfo, r: CaseResult): CaseSummary {
     seconds: r.seconds,
     activity: r.activity,
     usage: r.usage,
-    costUsd: addCost([costOf(model, r.usage, r.finishedAt)]),
+    usageRecorded,
+    costUsd: usageRecorded ? addCost([costOf(model, r.usage, r.finishedAt, r.requests)]) : null,
     updatedAt: r.finishedAt ?? null,
     error: r.error ?? null,
+    errorKind: errorKind(r.error),
   };
 }
 

@@ -1,0 +1,6 @@
+credit_note_id,order_line_id,issue_date,type,amount,currency,note
+CN-74001,SO-71002,2026-08-25,PRICE,1250.00,USD,"agreed price reduction"
+CN-74002,SO-71001,2026-07-20,GOODWILL,800.00,EUR,"late delivery gesture"
+CN-74003,SO-71007,2026-09-10,PRICE,436.80,GBP,"volume discount, 2%"
+CN-74004,SO-71005,2026-09-22,PRICE,1050.00,EUR,"price match"
+CN-74005,SO-71004,2026-08-10,PRICE,2000.00,EUR,"intercompany price true-up"

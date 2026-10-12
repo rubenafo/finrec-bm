@@ -48,7 +48,7 @@ export interface XlsPicture {
   description?: string;
 }
 
-/** A workbook as stored in a case's xls-sources/<name>.json. */
+/** A workbook to write: its sheets, with their cells and pictures. */
 export interface XlsSource {
   sheets: XlsSheet[];
 }
