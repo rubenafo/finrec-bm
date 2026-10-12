@@ -65,7 +65,7 @@ const anthropic = new ModelProvider({
 type OpenAIReasoning = "none" | "low" | "medium" | "high" | "xhigh";
 
 /**
- * Named OpenAI models as `oa-<model>-reasoning-<level>`, each an API model
+ * Named OpenAI models as `oa-<model>-<level>`, each an API model
  * plus a reasoning effort: "luna" is gpt-6-luna, "sol" is gpt-6.1-sol.
  */
 export const openaiModels: Readonly<Record<string, { apiModel: string; reasoning: OpenAIReasoning }>> = Object.fromEntries(
@@ -75,7 +75,7 @@ export const openaiModels: Readonly<Record<string, { apiModel: string; reasoning
       ["sol", "gpt-6.1-sol", ["low", "medium", "high", "xhigh"]],
     ] as const
   ).flatMap(([short, apiModel, levels]) =>
-    levels.map((reasoning) => [`oa-${short}-reasoning-${reasoning}`, { apiModel, reasoning }]),
+    levels.map((reasoning) => [`oa-${short}-${reasoning}`, { apiModel, reasoning }]),
   ),
 );
 
@@ -88,9 +88,11 @@ const openai = new ModelProvider({
   requiresApiKey: true,
   async create(modelId, { apiKey, maxTokens }) {
     const { OpenAIModel } = await import("@strands-agents/sdk/models/openai");
-    // OpenAI caches prompt prefixes automatically. A prompt_cache_key per model
-    // instance, so per case, keeps each conversation's requests on one cache
-    // instead of spreading concurrent cases that share the same opening prefix.
+    // OpenAI caches prompt prefixes automatically, with a breakpoint after the
+    // latest user message or tool result. A prompt_cache_key per model instance,
+    // so per case, routes a conversation's requests together: OpenAI says the
+    // gpt-6 models (GPT-5.6 and later) don't need it, but earlier models given
+    // as openai:<id> spread requests without one.
     const cacheConfig = { cacheKey: `finrec-${randomUUID()}` };
     // Adds the cache writes OpenAI bills to each response's usage (see cacheWriteRecorder).
     const writes = cacheWriteRecorder();
@@ -128,7 +130,7 @@ const google = new ModelProvider({
 type DeepSeekReasoning = "off" | "low" | "high" | "max";
 
 /**
- * DeepSeek models as `ds-<model>-reasoning-<level>`, each an API model plus a
+ * DeepSeek models as `ds-<model>-<level>`, each an API model plus a
  * reasoning setting. "flash" is deepseek-flash, "v4p" is deepseek-v4-pro.
  */
 export const deepseekModels: Readonly<Record<string, { apiModel: string; reasoning: DeepSeekReasoning }>> =
@@ -140,7 +142,7 @@ export const deepseekModels: Readonly<Record<string, { apiModel: string; reasoni
       ] as const
     ).flatMap(([short, apiModel]) =>
       (["off", "low", "high", "max"] as const).map((reasoning) => [
-        `ds-${short}-reasoning-${reasoning}`,
+        `ds-${short}-${reasoning}`,
         { apiModel, reasoning },
       ]),
     ),
@@ -196,7 +198,7 @@ export interface ModelSpec {
 /**
  * Parses `<provider>:<model id>` and checks the provider supports the model.
  * DeepSeek and named OpenAI and Anthropic models go by their name alone
- * (`ds-flash-reasoning-high`, `oa-luna-reasoning-xhigh`, `at-sonnet-high`); a
+ * (`ds-flash-high`, `oa-luna-xhigh`, `at-sonnet-high`); a
  * `deepseek:`, `openai:` or `anthropic:` prefix is accepted too. Only the first colon separates provider
  * and ID, so IDs that contain colons (OpenAI's `ft:...` fine-tunes) work as-is.
  */
@@ -209,7 +211,7 @@ export function parseModelSpec(spec: string): ModelSpec {
   const modelId = spec.slice(sep + 1).trim();
   if (sep <= 0 || modelId === "" || provider === undefined) {
     throw new Error(
-      `invalid model "${spec}": expected <provider>:<model id> with provider one of ${providers.join(", ")}, or a named model such as ds-flash-reasoning-high, oa-luna-reasoning-high or at-sonnet-high`,
+      `invalid model "${spec}": expected <provider>:<model id> with provider one of ${providers.join(", ")}, or a named model such as ds-flash-high, oa-luna-high or at-sonnet-high`,
     );
   }
   if (!provider.supports(modelId)) {
@@ -229,7 +231,7 @@ export function formatModelSpec({ provider, modelId }: ModelSpec): string {
 
 /**
  * Every listed model as a spec, e.g. `anthropic:claude-opus-5`,
- * `ds-flash-reasoning-high`, `oa-sol-reasoning-low`. Google lists
+ * `ds-flash-high`, `oa-sol-low`. Google lists
  * none; OpenAI lists its named models.
  */
 export function knownModelSpecs(): string[] {
@@ -255,9 +257,9 @@ export function hasApiKey({ provider }: ModelSpec, env: NodeJS.ProcessEnv = proc
 
 /**
  * Named groups of models for `--model`: `ds-flash` (or `dp-flash`) is every
- * ds-flash-reasoning-* model, `ds-v4pro` (or `ds-v4p`, `dp-v4pro`, `dp-v4p`)
- * every ds-v4p-reasoning-* one, `oa-luna` every oa-luna-reasoning-* one,
- * `oa-sol` every oa-sol-reasoning-* one, `at-haiku` every at-haiku-* one and
+ * ds-flash-* model, `ds-v4pro` (or `ds-v4p`, `dp-v4pro`, `dp-v4p`)
+ * every ds-v4p-* one, `oa-luna` every oa-luna-* one,
+ * `oa-sol` every oa-sol-* one, `at-haiku` every at-haiku-* one and
  * `at-sonnet` every at-sonnet-* one.
  */
 export const modelFamilies: Readonly<Record<string, string[]>> = (() => {
@@ -300,7 +302,7 @@ export function resolveModels(pattern: string): ModelSpec[] {
 
 /**
  * Resolves a comma-separated `--model` list, e.g. `ds-flash,ds-v4pro` or
- * `ds-flash-reasoning-low,anthropic:claude-opus-5`; each model once, in order.
+ * `ds-flash-low,anthropic:claude-opus-5`; each model once, in order.
  */
 export function resolveModelList(list: string): ModelSpec[] {
   const items = list.split(",").map((item) => item.trim()).filter((item) => item !== "");

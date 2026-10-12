@@ -89,6 +89,28 @@ describe("runTest", () => {
     assert.equal(result.answer, null);
   });
 
+  it("keeps a case's earlier result when a rerun hits an API error, and writes one where there was none", async () => {
+    const outDir = join(outRoot, "api-error");
+    const options = { testDir: join(benchmarkDir, "txt-matching"), modelSpec: "scripted:model", outDir, cases: ["case-01"], log: quiet };
+    await runTest({ ...options, model: new ScriptedModel([{ text: JSON.stringify(answer) }]) });
+    const earlier = readFileSync(join(outDir, "case-01.json"), "utf8");
+
+    class NoCreditsModel extends ScriptedModel {
+      override async *stream(): AsyncIterable<never> {
+        throw new Error("402 Insufficient Balance");
+      }
+    }
+    const lines: string[] = [];
+    const rerun = await runTest({ ...options, model: new NoCreditsModel([]), log: (line) => lines.push(line) });
+    assert.match(rerun.results[0]!.error!, /402 Insufficient Balance/, "the run itself reports the error");
+    assert.equal(readFileSync(join(outDir, "case-01.json"), "utf8"), earlier);
+    assert.ok(lines.some((l) => l.includes("kept the earlier result")));
+
+    const fresh = join(outRoot, "api-error-fresh");
+    await runTest({ ...options, outDir: fresh, model: new NoCreditsModel([]) });
+    assert.match((JSON.parse(readFileSync(join(fresh, "case-01.json"), "utf8")) as CaseResult).error!, /402/);
+  });
+
   it("logs one line when the test and each case start, and one when they end, with the duration", async () => {
     const lines: string[] = [];
     await runTest({

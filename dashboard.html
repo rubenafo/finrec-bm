@@ -170,8 +170,8 @@
     <section>
       <h2>Score against cost</h2>
       <div class="grid">
-        <div class="card"><h3 id="scatter-tokens-title"></h3><div class="chart" id="scatter-tokens"></div></div>
-        <div class="card"><h3 id="scatter-time-title"></h3><div class="chart" id="scatter-time"></div></div>
+        <div class="card"><h3 id="scatter-tokens-title"></h3><p class="note" id="scatter-tokens-note"></p><div class="chart" id="scatter-tokens"></div></div>
+        <div class="card"><h3 id="scatter-time-title"></h3><p class="note" id="scatter-time-note"></p><div class="chart" id="scatter-time"></div></div>
         <div class="card"><h3 id="scatter-cost-title"></h3><p class="note" id="scatter-cost-note"></p><div class="chart" id="scatter-cost"></div></div>
       </div>
     </section>
@@ -215,14 +215,14 @@
 
     <section>
       <h2>Pass rate by difficulty</h2>
-      <p class="note">One chart per difficulty level from the cases' meta.json, each sorted by its own pass rate, best first. Bars are coloured by provider, most vivid for the largest model (bigger model, then higher reasoning level) and paler for smaller ones. Each bar shows the pass rate and passed out of run; with only a case or two at a level, read it as a hint, not a ranking.</p>
+      <p class="note">One chart per difficulty level, each sorted by its own pass rate.</p>
       <div class="legend" id="provider-legend"></div>
       <div class="grid g3" id="difficulty-charts"></div>
     </section>
 
     <section>
       <h2>Pass rate by tag</h2>
-      <p class="note">One chart per tag from the cases' meta.json: first the skills a case tests, then where its evidence lives. A case counts in every chart of its tags. Sorted, coloured and labelled like the difficulty charts; hover a bar for the cases behind it.</p>
+      <p class="note">One chart per tag; a case counts in every chart of its tags.</p>
       <div class="grid g3" id="tag-charts"></div>
     </section>
 
@@ -317,20 +317,16 @@ const LEVEL_RANK = { off: 0, none: 0, low: 1, medium: 2, high: 3, max: 4, xhigh:
 const rankOf = (level) => LEVEL_RANK[level] ?? 4;
 
 /**
- * A model's family and reasoning level: "ds-flash-reasoning-high" is family
+ * A model's family and reasoning level: "ds-flash-high" is family
  * ds-flash at level high. A model without a level is a family of its own (level null).
  */
 function familyOf(model) {
-  // Anthropic's named models carry the effort level without "-reasoning": at-sonnet-high.
-  const m = model.match(/^(.*)-reasoning-(off|none|low|medium|high|max|xhigh)$/) ?? model.match(/^(at-[a-z]+)-(low|medium|high|max)$/);
+  const m = model.match(/^(.*)-(off|none|low|medium|high|max|xhigh)$/);
   return m ? { family: m[1], level: m[2] } : { family: model, level: null };
 }
 
-/** A model's display name: "ds-flash-reasoning-high" shows as "ds-flash-high". */
-const nameOf = (model) => {
-  const { family, level } = familyOf(model);
-  return level ? `${family}-${level}` : model;
-};
+/** A model's display name: its spec, e.g. "ds-flash-high" or "anthropic:claude-opus-5". */
+const nameOf = (model) => model;
 
 /** A model's colour in every chart, legend and table: its provider's hue, shaded by size (see providerShade). */
 const colorOf = (model) => providerShade(model);
@@ -412,11 +408,10 @@ function aggregate(cases) {
   for (const name of metricNames()) metrics[name] = metricMean(cases, name);
   const by = (f) => cases.map(f);
   const stat = (vals) => ({ mean: mean(vals), min: vals.length ? Math.min(...vals) : 0, max: vals.length ? Math.max(...vals) : 0 });
-  const agent = cases.map((c) => usageOf(c.usage));
+  // Tokens and cost per case: over the cases whose usage is known (see metered).
+  const agent = cases.filter(metered).map((c) => usageOf(c.usage));
   const outcomes = Object.fromEntries(OUTCOMES.map((o) => [o.key, cases.filter((c) => outcomeOf(c) === o.key).length]));
   const solved = cases.filter((c) => c.metrics?.exact_match === 1).length;
-  // Cost needs a price for every case; summaries before schema 9 have none.
-  const costs = cases.map((c) => c.costUsd);
   return {
     n: cases.length,
     outcomes,
@@ -438,9 +433,29 @@ function aggregate(cases) {
       input: mean(agent.map((u) => u.inputTokens)),
       cached: mean(agent.map((u) => u.cachedInputTokens)),
       output: mean(agent.map((u) => u.outputTokens)),
+      cases: agent.length,
     },
-    cost: cases.length && costs.every((c) => typeof c === "number") ? mean(costs) : null,
+    ...costPerCase(cases),
   };
+}
+
+/** Whether an error was the provider's (billing, rate limit, outage): the case says nothing about the model. */
+const apiError = (c) => c.errorKind === "api";
+
+/**
+ * Whether a case's tokens and cost are known: not an API error, whose few or
+ * no tokens say nothing about the model, and not a run that failed before
+ * usage was recorded per request, whose tokens were lost.
+ */
+const metered = (c) => !apiError(c) && c.usageRecorded !== false;
+
+/**
+ * Mean cost of the cases with a known cost, and how many those are; cost is
+ * null when none has one (no known price, or summaries before schema 9).
+ */
+function costPerCase(cases) {
+  const costs = cases.filter((c) => metered(c) && typeof c.costUsd === "number").map((c) => c.costUsd);
+  return { cost: costs.length ? mean(costs) : null, costCases: costs.length };
 }
 
 /** Metric names in the order the selected tests report them. */
@@ -592,6 +607,9 @@ function scatter(el, points, { xFmt = fmt.num, yFmt = fmt.score, yMax = 1, xLabe
   const frontier = [...points].sort((a, b) => a.x - b.x || b.y - a.y).filter((p, i, all) => all.slice(0, i).every((q) => q.y < p.y));
   if (frontier.length > 1) {
     s += `<polyline points="${frontier.map((p) => `${x(p.x)},${y(p.y)}`).join(" ")}" fill="none" stroke="var(--muted)" stroke-width="1.5"/>`;
+  } else if (frontier.length === 1) {
+    // One model beats every other on both axes: the frontier is its dot, ringed.
+    s += `<circle cx="${x(frontier[0].x)}" cy="${y(frontier[0].y)}" r="10" fill="none" stroke="var(--muted)" stroke-width="1.5"/>`;
   }
   // Labels: each tries the spots right beside its dot first, avoiding every dot and the labels
   // already placed, and only where the label is closer to its own dot than to any other, so it
@@ -726,18 +744,26 @@ function render() {
   // Score against cost.
   $("scatter-tokens-title").textContent = `${label(metric ?? "")} against agent tokens per case (line: efficiency frontier)`;
   $("scatter-time-title").textContent = `${label(metric ?? "")} against seconds per case (line: efficiency frontier)`;
-  const sp = (xv, xname, xf, list = view) => list.filter((v) => v.agg.metrics[metric] != null).map((v) => ({
-    x: xv(v), y: v.agg.metrics[metric] ?? 0, label: nameOf(v.model), color: colorOf(v.model),
-    tip: tip(nameOf(v.model), [[label(metric), fmt.score(v.agg.metrics[metric])], [xname, xf(xv(v))], ["Cases", v.agg.n]]),
+  // The same score as the table, each model over all its cases; tokens and cost per case over the cases where they are known.
+  const points = view.filter((v) => v.agg.metrics[metric] != null).map((v) => ({
+    v, n: v.agg.n, passed: v.agg.passed, score: v.agg.metrics[metric],
+    tokens: v.agg.agent.cases ? v.agg.agent.input + v.agg.agent.output : null, tokenCases: v.agg.agent.cases,
+    seconds: v.agg.seconds.mean, cost: v.agg.cost, costCases: v.agg.costCases,
   }));
-  scatter($("scatter-tokens"), sp((v) => v.agg.agent.input + v.agg.agent.output, "Tokens per case", fmt.tokens), { xFmt: fmt.tokens, xLabel: "agent tokens per case (input + output), log scale", yLabel: label(metric ?? ""), xLog: true });
-  scatter($("scatter-time"), sp((v) => v.agg.seconds.mean, "Seconds per case", fmt.num), { xFmt: fmt.num, xLabel: "seconds per case, log scale", yLabel: label(metric ?? ""), xLog: true });
+  const scoreText = (p) => (metric === "exact_match" ? `${fmt.pct(p.score)} (${p.passed} of ${p.n})` : fmt.score(p.score));
+  const sp = (xv, xname, xf, extra = () => []) => points.filter((p) => xv(p) != null).map((p) => ({
+    x: xv(p), y: p.score, label: nameOf(p.v.model), color: colorOf(p.v.model),
+    tip: tip(nameOf(p.v.model), [[label(metric), scoreText(p)], [xname, xf(xv(p))], ["Cases", p.n], ...extra(p)]),
+  }));
+  const tokenCases = (p) => (p.tokenCases < p.n ? [["Tokens known for", `${p.tokenCases} of ${p.n} cases`]] : []);
+  const costCases = (p) => (p.costCases < p.n ? [["Cost known for", `${p.costCases} of ${p.n} cases`]] : []);
+  $("scatter-tokens-note").textContent = "Each model over all its cases, as in the table.";
+  $("scatter-time-note").textContent = "Each model over all its cases, as in the table.";
+  $("scatter-cost-note").textContent = "Each model over all its cases, as in the table, at list prices.";
+  scatter($("scatter-tokens"), sp((p) => p.tokens, "Tokens per case", fmt.tokens, tokenCases), { xFmt: fmt.tokens, xLabel: "agent tokens per case (input + output), log scale", yLabel: label(metric ?? ""), xLog: true });
+  scatter($("scatter-time"), sp((p) => p.seconds, "Seconds per case", fmt.num), { xFmt: fmt.num, xLabel: "seconds per case, log scale", yLabel: label(metric ?? ""), xLog: true });
   $("scatter-cost-title").textContent = `${label(metric ?? "")} against cost per case in USD (line: efficiency frontier)`;
-  const priced = view.filter((v) => v.agg.cost != null);
-  const unpriced = view.filter((v) => v.agg.cost == null).map((v) => nameOf(v.model));
-  $("scatter-cost-note").textContent = `Agent tokens at list prices: uncached input, cache reads, cache writes and output each at their own rate; DeepSeek at its peak or off-peak price by when the case ran.` +
-    (unpriced.length ? ` Not shown, without a cost (no known price, or Claude results recorded before cache writes were counted: rerun them): ${unpriced.join(", ")}.` : "");
-  scatter($("scatter-cost"), sp((v) => v.agg.cost, "Cost per case", fmt.usd, priced), { xFmt: fmt.usd, xLabel: "USD per case, log scale", yLabel: label(metric ?? ""), xLog: true });
+  scatter($("scatter-cost"), sp((p) => p.cost, "Cost per case", fmt.usd, costCases), { xFmt: fmt.usd, xLabel: "USD per case, log scale", yLabel: label(metric ?? ""), xLog: true });
 
   renderCaseHeatmap(view, metric, metrics);
 

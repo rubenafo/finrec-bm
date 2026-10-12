@@ -4,6 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { DuckDBInstance } from "@duckdb/node-api";
+import {
+  ModelContentBlockDeltaEvent,
+  ModelContentBlockStartEvent,
+  ModelContentBlockStopEvent,
+  ModelMessageStartEvent,
+  ModelMessageStopEvent,
+  ModelMetadataEvent,
+  ModelThrottledError,
+  type Message,
+  type ModelStreamEvent,
+} from "@strands-agents/sdk";
 import { buildScreenshot } from "../scripts/screenshot-writer.js";
 import { runAgent, strandsLogger, toUsage } from "../src/common/agent.js";
 import { tools, type CaseContext } from "../src/tools/index.js";
@@ -85,11 +96,105 @@ describe("runAgent", () => {
     assert.deepEqual(warn.mock.calls.map((c) => c.arguments), [["something else"]]);
   });
 
+  it("shows Strands' note that it dropped a server-side tool block, and no other debug output", (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    strandsLogger.debug("block_type=<server_tool_use> | skipping server-side tool block");
+    strandsLogger.debug("anything else");
+    assert.deepEqual(warn.mock.calls.map((c) => c.arguments), [["block_type=<server_tool_use> | skipping server-side tool block"]]);
+  });
+
   it("counts cached tokens as part of the input, adding them back for providers that report them apart", () => {
     const usage = { inputTokens: 100, outputTokens: 20, totalTokens: 120, cacheReadInputTokens: 800, cacheWriteInputTokens: 50 };
     assert.deepEqual(toUsage(usage, true), { inputTokens: 950, outputTokens: 20, cachedInputTokens: 800, cacheWriteInputTokens: 50 });
     assert.deepEqual(toUsage(usage, false), { inputTokens: 100, outputTokens: 20, cachedInputTokens: 800, cacheWriteInputTokens: 50 });
     assert.deepEqual(toUsage(undefined, true), { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0 });
+  });
+
+  it("records each request's usage and time, and keeps them when the run fails", async () => {
+    // The second request reports its usage, then fails as at the token limit.
+    class FailingModel extends ScriptedModel {
+      override async *stream(messages: Message[]): AsyncIterable<ModelStreamEvent> {
+        if (this.calls === 1) {
+          this.calls++;
+          yield new ModelMetadataEvent({ type: "modelMetadataEvent", usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 } });
+          throw new Error("Model reached maximum token limit");
+        }
+        yield* super.stream(messages);
+      }
+    }
+    const model = new FailingModel([{ tool: "query_ledger", input: { queries: ["SELECT 1"] } }]);
+    const run = await runAgent({ model, systemPrompt: "sys", prompt: "go", tools: allTools, ctx, maxTurns: 10 });
+
+    assert.equal(run.error, "Model reached maximum token limit");
+    assert.equal(run.text, "");
+    assert.equal(run.toolCalls.length, 1);
+    assert.deepEqual(
+      run.requests.map(({ at, ...usage }) => (assert.ok(!Number.isNaN(Date.parse(at)), at), usage)),
+      [
+        { inputTokens: 10, outputTokens: 5, cachedInputTokens: 6, cacheWriteInputTokens: 0 },
+        { inputTokens: 7, outputTokens: 3, cachedInputTokens: 0, cacheWriteInputTokens: 0 },
+      ],
+    );
+    assert.deepEqual(run.usage, { inputTokens: 17, outputTokens: 8, cachedInputTokens: 6, cacheWriteInputTokens: 0 });
+    assert.equal(model.stream, FailingModel.prototype.stream, "the model's own stream is back");
+  });
+
+  it("doesn't count a throttled request that Strands retries as a turn", { timeout: 30_000 }, async () => {
+    class ThrottledOnceModel extends ScriptedModel {
+      throttled = false;
+      override async *stream(messages: Message[]): AsyncIterable<ModelStreamEvent> {
+        if (!this.throttled) {
+          this.throttled = true;
+          throw new ModelThrottledError("429 rate limit");
+        }
+        yield* super.stream(messages);
+      }
+    }
+    const model = new ThrottledOnceModel([{ tool: "query_ledger", input: { queries: ["SELECT 1"] } }, { text: answer }]);
+    const run = await runAgent({ model, systemPrompt: "sys", prompt: "go", tools: allTools, ctx, maxTurns: 2 });
+
+    assert.equal(run.error, undefined);
+    assert.equal(run.turnLimitReached, false, "the retry didn't use up one of the 2 turns");
+    assert.equal(run.turns, 2);
+    assert.equal(run.text, answer);
+  });
+
+  /** A model whose first `bad` replies stop for tool use but carry only text, as Claude Sonnet 5.5 once did. */
+  class EmptyToolUseModel extends ScriptedModel {
+    constructor(steps: ConstructorParameters<typeof ScriptedModel>[0], private bad: number) {
+      super(steps);
+    }
+    override async *stream(messages: Message[]): AsyncIterable<ModelStreamEvent> {
+      if (this.bad === 0) return yield* super.stream(messages);
+      this.bad--;
+      yield new ModelMessageStartEvent({ type: "modelMessageStartEvent", role: "assistant" });
+      yield new ModelContentBlockStartEvent({ type: "modelContentBlockStartEvent" });
+      yield new ModelContentBlockDeltaEvent({ type: "modelContentBlockDeltaEvent", delta: { type: "textDelta", text: "Let me add these." } });
+      yield new ModelContentBlockStopEvent({ type: "modelContentBlockStopEvent" });
+      yield new ModelMessageStopEvent({ type: "modelMessageStopEvent", stopReason: "toolUse" });
+      yield new ModelMetadataEvent({ type: "modelMetadataEvent", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } });
+    }
+  }
+
+  it("asks again after a reply that stops for tool use without a tool call", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const model = new EmptyToolUseModel([{ tool: "query_ledger", input: { queries: ["SELECT 1"] } }, { text: answer }], 1);
+    const run = await runAgent({ model, systemPrompt: "sys", prompt: "go", tools: allTools, ctx, maxTurns: 10 });
+
+    assert.equal(run.error, undefined);
+    assert.equal(run.text, answer);
+    assert.equal(run.toolCalls.length, 1);
+    assert.equal(run.turns, 3, "the dropped reply was a model call");
+    assert.equal(run.requests.length, 3);
+  });
+
+  it("gives up after two such replies in a run", async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const model = new EmptyToolUseModel([{ text: answer }], 3);
+    const run = await runAgent({ model, systemPrompt: "sys", prompt: "go", tools: allTools, ctx, maxTurns: 10 });
+
+    assert.match(run.error ?? "", /no tool use blocks found/);
+    assert.equal(run.turns, 3);
   });
 
   it("stops at maxTurns", async () => {
